@@ -57,6 +57,7 @@ class HyperCubicLattice(Lattice):
         boundary_condition: Union[
             BoundaryCondition, Tuple[BoundaryCondition, ...]
         ] = BoundaryCondition.OPEN,
+        self_loops:bool = True
     ) -> None:
         """
         Args:
@@ -119,8 +120,9 @@ class HyperCubicLattice(Lattice):
         graph.add_edges_from(bulk_edge_list)
 
         # add self-loops.
-        self_loop_list = self._self_loops()
-        graph.add_edges_from(self_loop_list)
+        if self_loops:
+            self_loop_list = self._self_loops()
+            graph.add_edges_from(self_loop_list)
 
         # add edges that cross the boundaries
         boundary_edge_list = self._create_boundary_edges()

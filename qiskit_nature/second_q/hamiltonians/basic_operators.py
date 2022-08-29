@@ -13,7 +13,7 @@
 """Basic operators for the wilson hamiltonian"""
 
 
-from qiskit_nature.second_q.operators import FermionicOp
+from qiskit_nature.second_q.operators import FermionicOp, SpinOp
 from qiskit_nature.second_q.properties.lattices import HyperCubicLattice
 import numpy as np
 
@@ -34,13 +34,32 @@ class FermionicSpinor:
         """
         fermionic_sum = []
         for (a,b),v in np.ndenumerate(operator):
-            print(a,b,v)
+            # print(a,b,v)
             if v != 0:
                 index_A = self.ncomponents * site_left + a
                 index_B = self.ncomponents * site_right + b
                 fermionic_sum.append(v * (FermionicOp(f"+_{index_A}")@FermionicOp(f"-_{index_B}")))
-                print(index_A,index_B)
+                # print(index_A,index_B)
+
+        # print('end')
         return sum(fermionic_sum)
+
+class QLM:
+    def __init__(self,spin:int,edges:int) -> None:
+
+        self.spin = spin
+        self.ds = 2*spin + 1
+        self.edges = edges
+
+
+    def operatorU(self,edge_index):
+        e=1
+        return e *  SpinOp(f"Z_{edge_index}",spin=self.spin,register_length = self.edges)
+
+    def field(self,position,direction):
+        return 1.0
+
+
 
 
 
