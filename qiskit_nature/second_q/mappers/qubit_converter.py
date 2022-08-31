@@ -28,6 +28,7 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
+    Sequence
 )
 
 import numpy as np
@@ -35,14 +36,17 @@ import numpy as np
 from qiskit.algorithms.minimum_eigen_solvers.minimum_eigen_solver import (
     ListOrDict as ListOrDictType,
 )
-from qiskit.opflow import PauliSumOp
+from qiskit.opflow import PauliSumOp, I
 from qiskit.opflow.converters import TwoQubitReduction
 from qiskit.opflow.primitive_ops import Z2Symmetries
 
 from qiskit_nature import QiskitNatureError
 
-from qiskit_nature.second_q.operators import SecondQuantizedOp
+from qiskit_nature.second_q.operators import SecondQuantizedOp, FermionicOp, SpinOp
+from qiskit_nature.second_q.operators.mixed_op import MixedOp
 from .qubit_mapper import QubitMapper
+from .fermionic_mapper import FermionicMapper
+from .spin_mapper import SpinMapper
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -110,7 +114,7 @@ class QubitConverter:
 
     def __init__(
         self,
-        mapper: QubitMapper,
+        mappers: Sequence[QubitMapper],
         two_qubit_reduction: bool = False,
         z2symmetry_reduction: Optional[Union[str, List[int]]] = None,
     ):
@@ -131,7 +135,7 @@ class QubitConverter:
                 meaning no symmetry reduction is done.
         """
 
-        self._mapper: QubitMapper = mapper
+        self._mappers = mappers
         self._two_qubit_reduction: bool = two_qubit_reduction
         self._z2symmetry_reduction: Optional[Union[str, List[int]]] = None
         self.z2symmetry_reduction = z2symmetry_reduction  # Setter does validation
@@ -145,14 +149,14 @@ class QubitConverter:
         return Z2Symmetries([], [], [], None)
 
     @property
-    def mapper(self) -> QubitMapper:
-        """Get mapper"""
-        return self._mapper
+    def mappers(self) -> list[QubitMapper]:
+        """Get mappers"""
+        return self._mappers
 
-    @mapper.setter
-    def mapper(self, value: QubitMapper) -> None:
-        """Set mapper"""
-        self._mapper = value
+    @mappers.setter
+    def mappers(self, value: list[QubitMapper]) -> None:
+        """Set mappers"""
+        self._mappers = value
         self._z2symmetries = None  # Reset as symmetries my change due to mapper change
 
     @property
@@ -210,9 +214,9 @@ class QubitConverter:
     def convert(
         self,
         second_q_op: SecondQuantizedOp,
-        num_particles: Optional[Tuple[int, int]] = None,
-        sector_locator: Optional[
-            Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]
+        num_particles: Optional[list[Tuple[int, int]]] = None,
+        sector_locator: Optional[list[
+            Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]]
         ] = None,
     ) -> PauliSumOp:
         """
@@ -241,6 +245,61 @@ class QubitConverter:
         self._z2symmetries = z2symmetries
 
         return tapered_op
+
+        # mix_coefficients = second_q_op.coeffs
+        # operators = second_q_op.ops
+        #
+        # for mapper in self._mappers:
+        #     if isinstance(mapper, FermionicMapper):
+        #         fermionic_mapper = mapper
+        #     else:
+        #         spin_mapper = mapper
+        #
+        # def apply_map_sym(op, mapper):
+        #     qubit_op = mapper.map(op)
+        #     reduced_op = self._two_qubit_reduce(qubit_op, num_particles)
+        #     tapered_op, z2symmetries = self._find_taper_op(reduced_op, sector_locator)
+        #
+        #     self._num_particles = num_particles
+        #     self._z2symmetries = z2symmetries
+        #
+        #     return tapered_op
+        #
+        # # convert all fermionics and store in list
+        # tapered_f_ops = []
+        # max_f_reg_length = 0
+        # for f_op in operators[FermionicOp]:
+        #     t_op = apply_map_sym(f_op, fermionic_mapper)
+        #
+        #     max_f_reg_length = t_op.num_qubits if t_op.num_qubits > max_f_reg_length else max_f_reg_length
+        #     tapered_f_ops.append(t_op)
+        #
+        # # convert all spins and store in list
+        # tapered_s_ops = []
+        # max_s_reg_length = 0
+        # for s_op in operators[SpinOp]:
+        #     t_op = apply_map_sym(s_op, spin_mapper)
+        #     max_s_reg_length = t_op.num_qubits if t_op.num_qubits > max_s_reg_length else max_s_reg_length
+        #     tapered_s_ops.append(t_op)
+        #
+        # f_paulis = I if max_f_reg_length > 0 else None
+        # for i in range(max_f_reg_length-1):
+        #     f_paulis^=I
+        #
+        # s_paulis = I if max_s_reg_length > 0 else None
+        # for i in range(max_s_reg_length-1):
+        #     s_paulis^=I
+        #
+        # tapered_ops = []
+        # for c in mix_coefficients:
+        #     if len(c[0]) > 1:
+        #         tapered_ops.append(tapered_f_ops[c[0][0][1]] ^ tapered_s_ops[c[0][1][1]] * c[1])
+        #     elif c[0][0][0] is FermionicOp:
+        #         tapered_ops.append(tapered_f_ops[c[0][0][1]] ^ s_paulis * c[1])
+        #     elif c[0][0][0] is SpinOp:
+        #         tapered_ops.append(f_paulis ^ tapered_s_ops[c[0][0][1]] * c[1])
+        #
+        # return sum(tapered_ops)
 
     def convert_only(
         self,
@@ -395,7 +454,69 @@ class QubitConverter:
         return qubit_ops
 
     def _map(self, second_q_op: SecondQuantizedOp) -> PauliSumOp:
-        return self._mapper.map(second_q_op)
+
+        if isinstance(second_q_op, MixedOp):
+            if isinstance(self._mappers, list) and len(self._mappers) > 1:
+                return self._map_multiple(second_q_op)
+            else:
+                raise TypeError("The conversion of MixedOp requires at least a fermionic and spin mapper.")
+
+        else:
+            if isinstance(self._mappers, list):
+                return self._mappers[0].map(second_q_op)
+            else:
+                return self._mappers.map(second_q_op)
+
+    def _map_multiple(self, second_q_op: MixedOp) -> PauliSumOp:
+
+        mix_coefficients = second_q_op.coeffs
+        operators = second_q_op.ops
+
+        for mapper in self._mappers:
+            if isinstance(mapper, FermionicMapper):
+                fermionic_mapper = mapper
+            else:
+                spin_mapper = mapper
+
+        # get rid of this func
+        def apply_map_sym(op, mapper):
+            qubit_op = mapper.map(op)
+            return qubit_op
+
+        # convert all fermionics and store in list
+        qubit_f_ops = []
+        max_f_reg_length = 0
+        for f_op in operators[FermionicOp]:
+            q_op = apply_map_sym(f_op, fermionic_mapper)
+            max_f_reg_length = q_op.num_qubits if q_op.num_qubits > max_f_reg_length else max_f_reg_length
+            qubit_f_ops.append(q_op)
+
+        # convert all spins and store in list
+        qubit_s_ops = []
+        max_s_reg_length = 0
+        for s_op in operators[SpinOp]:
+            q_op = apply_map_sym(s_op, spin_mapper)
+            max_s_reg_length = q_op.num_qubits if q_op.num_qubits > max_s_reg_length else max_s_reg_length
+            qubit_s_ops.append(q_op)
+
+        f_paulis = I if max_f_reg_length > 0 else None
+        for i in range(max_f_reg_length - 1):
+            f_paulis ^= I
+
+        s_paulis = I if max_s_reg_length > 0 else None
+        for i in range(max_s_reg_length - 1):
+            s_paulis ^= I
+
+        qubit_ops = []
+        for c in mix_coefficients:
+            if len(c[0]) > 1:
+                qubit_ops.append(qubit_f_ops[c[0][0][1]] ^ qubit_s_ops[c[0][1][1]] * c[1])
+            elif c[0][0][0] is FermionicOp:
+                qubit_ops.append(qubit_f_ops[c[0][0][1]] ^ s_paulis * c[1])
+            elif c[0][0][0] is SpinOp:
+                qubit_ops.append(f_paulis ^ qubit_s_ops[c[0][0][1]] * c[1])
+
+        return sum(qubit_ops)
 
     def _two_qubit_reduce(
         self, qubit_op: PauliSumOp, num_particles: Optional[Tuple[int, int]]
