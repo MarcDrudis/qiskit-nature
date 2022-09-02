@@ -15,13 +15,12 @@ import numpy as np
 from qiskit_nature.second_q.operators.spin_op import SpinOp
 
 # from qiskit_nature.second_q.operators import MixedOp
-from qiskit_nature.second_q.properties.lattices import Lattice
-
 from qiskit_nature.second_q.properties import LatticeModel
 from qiskit_nature.second_q.operators import FermionicOp
 
-from ..properties.lattices.hyper_cubic_lattice import HyperCubicLattice
-from .basic_operators import FermionicSpinor, QLM
+from qiskit_nature.second_q.properties.lattices import  HyperCubicLattice
+
+from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor, QLM
 
 from typing import List
 
@@ -57,7 +56,6 @@ class WilsonModel(LatticeModel):
         self._a = a
         self._r = r
         self._mass = mass
-        self._lattice = lattice
         self._d = lattice.dim
         self.representation = representation
         self.ncomponents = ncomponents
@@ -77,24 +75,40 @@ class WilsonModel(LatticeModel):
         """Creates the hopping term in the hamiltonian."""
         hopping_terms = []
 
-        x_dim,y_dim,_ = self.lattice.size
-        directions = {  1:1,
-                        x_dim:2,
-                        x_dim*y_dim:3
-                        }
+        directions = { np.prod(self.lattice.size[:i], dtype=int):i+1 for i in range(self._d)}
+
         tensor_size = self.representation[0].shape[0]
-        for edge_index, edge in enumerate(self.lattice.weighted_edge_list):
-            k = directions[np.abs(edge[1]-edge[0])]
+        for edge_index, (node_a,node_b) in enumerate(self.lattice.graph.edge_list()):
+            print(edge_index,node_a,node_b)
+            k = directions[np.abs(node_b-node_a)]
             fermionic_tensor = self.representation[0] @ (self._r * np.eye(tensor_size) + 1.0j*self.representation[k])
-            fermionic_part = self._fermionic_spinor.spinor_product(edge[0],edge[1],fermionic_tensor)
+            fermionic_part = self._fermionic_spinor.spinor_product(node_a,node_b,fermionic_tensor)
 
             bosonic_part = self._QLM_spin.operatorU(edge_index=edge_index)
-            bosonic_part = self._QLM_spin.field(None,None) * bosonic_part #This is just conceptual
+
 
             # mixed_op = MixedOP(coeff = 1.0, fermionic = fermionic_part, bosonic = bosonic_part)
             hopping_terms.append((fermionic_part,bosonic_part))
 
+        # return 1/(2*self._a) * sum(hopping_terms) + hc
         return hopping_terms
+
+    def plaquette_term(self):
+        """Creates the plaquette terms for the hamiltonian."""
+        #Note that for a given pair of connected nodes, the edge between them will by shared by
+        #N_plaquettes(a,b) = max(C(a),C(B))-2. Where C(a) dennotes the connectivity of the node a.
+
+        if self._d == 1:
+            return None
+
+        plaquette_terms = []
+        for edge_index, (node_a,node_b) in enumerate(self.lattice.graph.edge_list()):
+            plaquettes = max(self.lattice.graph.degree(node_a),self.lattice.graph.degree(node_b)) - 2
+            operatorU = self._QLM_spin.operatorU(edge_index=edge_index)
+            plaquette_terms.append(plaquettes * (operatorU+operatorU.adjoint()))
+
+        e = 1
+        return (-1)/(4*e) * sum(plaquette_terms)
 
 
 

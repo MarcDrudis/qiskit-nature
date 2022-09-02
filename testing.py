@@ -1,5 +1,5 @@
 from fractions import Fraction
-from qiskit_nature.second_q.properties import lattice_model
+from qiskit_nature.second_q.properties import LatticeDrawStyle
 from qiskit_nature.second_q.properties.lattices import Lattice, HyperCubicLattice
 from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor
 from qiskit_nature.second_q.operators import FermionicOp, SpinOp
@@ -10,11 +10,15 @@ import numpy as np
 
 
 
-some_lattice = HyperCubicLattice((4,3,7),edge_parameter = (1.0, 2.0, 3.0),self_loops=False)
+some_lattice = HyperCubicLattice((4,3),edge_parameter = (1.0, 2.0),self_loops=False)
+
+print(some_lattice.graph.edge_list())
 
 
+some_lattice.draw(style = LatticeDrawStyle(with_labels=True))
+plt.show()
 
-representation =[
+representation = [
     np.array([[1,0,0,0],[0,1,0,0],[0,0,-1,0],[0,0,0,-1]]),
     np.array([[0,0,0,1],[0,0,1,0],[0,-1,0,0],[-1,0,0,0]]),
     np.array([[0,0,0,-1j],[0,0,1j,0],[0,1j,0,0],[-1j,0,0,0]]),
@@ -31,6 +35,6 @@ w_model = WilsonModel(  lattice = some_lattice,
                         flavours=1,
                         spin=3)
 
-print(w_model.hopping_term())
+print(w_model.plaquette_term())
 
 
