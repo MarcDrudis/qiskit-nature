@@ -53,8 +53,9 @@ class QLM:
 
 
     def operatorU(self,edge_index):
-        e=1
-        return e *  SpinOp(f"Z_{edge_index}",spin=self.spin,register_length = self.edges)
+        return (self.spin*(self.spin+1))**(-0.5) *  SpinOp(f"+_{edge_index}",spin=self.spin,register_length = self.edges)
+
+    # def operatorE()
 
     def field(self,position,direction):
         return 1.0
