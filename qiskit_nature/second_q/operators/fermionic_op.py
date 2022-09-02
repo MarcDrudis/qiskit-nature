@@ -25,6 +25,7 @@ from scipy.sparse import csc_matrix
 
 from .second_quantized_op import SecondQuantizedOp
 
+
 _ZERO_LABELS = {
     ("+", "+"),
     ("+", "N"),
@@ -411,9 +412,12 @@ class FermionicOp(SecondQuantizedOp):
 
     def compose(self, other: FermionicOp) -> FermionicOp:
         if not isinstance(other, FermionicOp):
-            raise TypeError(
-                f"Unsupported operand type(s) for *: 'FermionicOp' and '{type(other).__name__}'"
-            )
+            from .mixed_op import MixedOp
+            return MixedOp(([self, other], 1))
+            # else:
+            #     raise TypeError(
+            #         f"Unsupported operand type(s) for *: 'FermionicOp' and '{type(other).__name__}'"
+            #     )
 
         new_data = list(
             filter(
