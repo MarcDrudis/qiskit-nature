@@ -64,7 +64,7 @@ class MixedOp(SecondQuantizedOp):
             repr_coeffs.append((new_ops, new_coeff))
         return (
             f"MixedOp( \n "
-            f"Operators = ({repr_fermionic}, {repr_spin}\n"
+            f"Operators = ({repr_fermionic}, \n {repr_spin}\n"
             f"Mix Coefficients = ({repr_coeffs}) \n * )"
         )
 
@@ -77,54 +77,51 @@ class MixedOp(SecondQuantizedOp):
                 f"Unsupported operand type(s) for *: 'MixedOp' and '{type(other).__name__}'"
             )
         op_list = self.ops[FermionicOp] + self.ops[SpinOp]
-
-        new_coeffs = []
-        for c in self.coeffs:
-            new_coeff = c[1] * other
-            new_ops = [(x[0], x[1]) for x in c[0]]
-            new_coeffs.append((new_ops, new_coeff))
+        new_coeffs = [(c[0], c[1] * other) for c in self.coeffs]
 
         return MixedOp((op_list, new_coeffs))
 
     def compose(self, other: MixedOp) -> MixedOp:
         raise NotImplementedError
 
-    def add(self, other: FermionicOp | SpinOp) -> MixedOp:
+    def add(self, other: FermionicOp | SpinOp | MixedOp) -> MixedOp:
 
-        f_op_list = self.ops[FermionicOp]
-        s_op_list = self.ops[SpinOp]
-        new_coeffs = copy(self.coeffs)
+        f_op_list = copy(self.ops[FermionicOp])
+        s_op_list = copy(self.ops[SpinOp])
+        coeffs = copy(self.coeffs)
 
         if isinstance(other, FermionicOp):
             f_op_list.append(other)
-            new_coeff = 1
             new_ops = [(FermionicOp, len(f_op_list)-1)]
-            new_coeffs.append((new_ops, new_coeff))
+            new_coeffs = coeffs + [(new_ops, 1)]
 
         elif isinstance(other, SpinOp):
             s_op_list.append(other)
-            new_coeff = 1
             new_ops = [(SpinOp, len(s_op_list)-1)]
-            new_coeffs.append((new_ops, new_coeff))
+            new_coeffs = coeffs + [(new_ops, 1)]
 
         else:
-            raise TypeError(
-                f"Unsupported operand type(s) for +: 'MixedOp' and '{type(other).__name__}'"
-            )
+            offset_map = {FermionicOp: len(f_op_list),
+                          SpinOp: len(s_op_list)}
+
+            f_op_list += other.ops[FermionicOp]
+            s_op_list += other.ops[SpinOp]
+
+            new_coeffs = coeffs + [([(x[0], x[1] + offset_map[x[0]]) for x in c[0]], c[1]) for c in other.coeffs]
 
         op_list = f_op_list + s_op_list
         return MixedOp((op_list, new_coeffs))
 
     def to_list(
         self,
-        display_format: Optional[str] = None,
+        display_format: str | None = None,
     ) -> list[tuple[str, complex]]:
         raise NotImplementedError
 
     def adjoint(self) -> MixedOp:
         raise NotImplementedError
 
-    def simplify(self, atol: Optional[float] = None) -> MixedOp:
+    def simplify(self, atol: float | None = None) -> MixedOp:
         raise NotImplementedError
 
     @property
