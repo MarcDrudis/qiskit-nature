@@ -49,7 +49,10 @@ class FermionicSpinor:
                 )
 
         # Here I should get rid of the additional phase
-        return -1.0j * sum(fermionic_sum)
+        return sum(fermionic_sum)# * -1.0j
+
+    def idnty(self):
+        return FermionicOp("",register_length=self.register_lenght)
 
 
 class QLM:
@@ -64,8 +67,8 @@ class QLM:
         self.e = e_value
         self.electric_field = electric_field
 
-    def idnty(self, edge_index):
-        return SpinOp(f"I_{edge_index}", spin=self.spin, register_length=self.edges)
+    def idnty(self):
+        return SpinOp("I_0", spin=self.spin, register_length=self.edges)
 
     def operatorU(self, edge_index):
         return (self.spin * (self.spin + 1)) ** (-0.5) * SpinOp(

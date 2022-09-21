@@ -19,7 +19,7 @@ from qiskit_nature.second_q.operators import FermionicOp
 
 from .qubit_mapper import QubitMapper
 
-# asd
+
 class FermionicMapper(QubitMapper):
     """Mapper of Fermionic Operator to Qubit Operator"""
 

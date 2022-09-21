@@ -11,8 +11,6 @@
 # that they have been altered from the originals.
 
 """The Fermi-Hubbard model"""
-from random import gauss
-from unittest import skip
 import numpy as np
 from qiskit_nature.second_q.mappers.jordan_wigner_mapper import JordanWignerMapper
 from qiskit_nature.second_q.mappers.logarithmic_mapper import LogarithmicMapper
@@ -93,8 +91,10 @@ class WilsonModel(LatticeModel):
             )
         return (self._mass + self._r * self._d / self._a) * sum(mass_terms)
 
-    def hopping_term(self):
-        """Creates the hopping term in the hamiltonian."""
+    def hopping_term(self) -> MixedOp:
+        """Creates the hopping term in the hamiltonian.
+        Note that this only creates the first term and we still need to add the conjugate transpose.
+        """
         hopping_terms = []
 
         tensor_size = self.representation[0].shape[0]
@@ -107,17 +107,13 @@ class WilsonModel(LatticeModel):
 
             bosonic_part = self._QLM_spin.operatorU(edge_index=edge_index)
 
-            mix_op = (1 / 2 * self._a, fermionic_part, bosonic_part)
-            mix_op_dag = (1 / 2 * self._a, fermionic_part.adjoint(), bosonic_part.adjoint())
-            # mixed_op = MixedOp(([fermionic_part, bosonic_part], 1 / (2 * self._a)))
-            # mixed_op_dag = MixedOp(
-            #     ([fermionic_part.adjoint(), bosonic_part.adjoint()], 1 / (2 * self._a))
-            # )
+            mix_op = MixedOp(([fermionic_part, bosonic_part], 1 / (2 * self._a)))
+            mix_op_dag = MixedOp(
+                ([fermionic_part.adjoint(), bosonic_part.adjoint()], 1 / (2 * self._a))
+            )
             hopping_terms.append(mix_op)
             hopping_terms.append(mix_op_dag)
-
-        # return sum(hopping_terms) #+hc
-        return hopping_terms
+        return sum(hopping_terms)
 
     def plaquette_term(self) -> SpinOp:
         """Creates the plaquette terms for the hamiltonian."""
@@ -137,85 +133,21 @@ class WilsonModel(LatticeModel):
         for edge_index, (node_a, node_b) in enumerate(self.lattice.graph.edge_list()):
             op_E = self._QLM_spin.operatorE(edge_index=edge_index)
             op_E_2 = self._QLM_spin.operatorE_2(edge_index=edge_index)
-            idnty = self._QLM_spin.idnty(edge_index=edge_index)
+            idnty = self._QLM_spin.idnty()
             k = self.lattice.direction((node_a, node_b))
             field = self._QLM_spin.electric_field[k - 1]
             link_terms.append(op_E_2 + 2 * field * op_E + field**2 * idnty)
 
         return self.e**2 / 2 * sum(link_terms)
 
-    def gauss_operator(self):
+    def gauss_operators(self) -> List[MixedOp]:
         charge_offset = -self.e
         gauss_terms = []
         for site in self.lattice.node_indexes:
-            divergence = self._QLM_spin.operator_divergence(site)
-            charge = -self._q * self._fermionic_spinor.spinor_product(site, site, None)
-            gauss_terms.append((divergence,charge))
-        return gauss_terms, charge_offset
-
-    def mock_qubit_parts(self):
-        #Pure mass term
-        mass_op = self.mass_term()
-
-        #Pure link_plaquette term
-        link_plaquette_op = self.link_term()
-        if self._d > 1:
-            link_plaquette_op += self.plaquette_term()
-
-        #Fermionic Spin and converter
-        fermionic_converter = QubitConverter(JordanWignerMapper())
-        fermionic_idnty = FermionicOp.one(register_length=mass_op.register_length)
-        fermionic_idnty_qubits = fermionic_converter.convert(fermionic_idnty)
-
-        #Spin identity and converter
-        spin_converter = QubitConverter(LogarithmicMapper())
-        spin_idnty = SpinOp(
-            "", spin=link_plaquette_op.spin, register_length=link_plaquette_op.register_length
-        )
-        spin_idnty_qubits = spin_converter.convert(spin_idnty)
-
-        #Tensored link_plaquette term
-        link_plaquette_qubits = spin_converter.convert(link_plaquette_op)
-        link_plaquette_term = fermionic_idnty_qubits ^ link_plaquette_qubits
-
-        #Tensored mass term
-        mass_qubits = fermionic_converter.convert(mass_op)
-        mass_term = mass_qubits ^ spin_idnty_qubits
-
-
-        #hopping_term
-        hopping_term = None
-        for coeff, ferm, spi in self.hopping_term():
-            if hopping_term is None:
-                hopping_term = coeff * (
-                fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
-                )
-            else:
-                hopping_term += coeff * (
-                    fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
-                )
-
-        # Regulator term
-        regulator_term = None
-        gauss_operators,charge_offset = self.gauss_operator()
-        for divergence,charge in gauss_operators:
-            if divergence is None:
-                div_op = spin_idnty_qubits
-            elif divergence == 0:
-                continue
-            else:
-                div_op = spin_converter.convert(divergence)
-            ch_op = fermionic_converter.convert(charge)
-            gauss_op = (fermionic_idnty_qubits^div_op) + (ch_op^spin_idnty_qubits)
-            gauss_op -= charge_offset * (fermionic_idnty_qubits^spin_idnty_qubits)
-            if regulator_term is None:
-                regulator_term = self._lambda * (gauss_op@gauss_op)
-            else:
-                regulator_term += self._lambda * (gauss_op@gauss_op)
-
-
-        return  (self._a**self._d * hopping_term, self._a**self._d * mass_term, self._a**self._d * link_plaquette_term, regulator_term)
-
+            gauss_term = MixedOp(([self._fermionic_spinor.idnty(),self._QLM_spin.operator_divergence(site)],1))
+            gauss_term += -self._q * self._fermionic_spinor.spinor_product(site, site, None)
+            gauss_terms.append(gauss_term)
+        return gauss_terms
 
     def mock_qubit_operator(self):
         return sum(self.mock_qubit_parts())
@@ -231,4 +163,88 @@ class WilsonModel(LatticeModel):
             MixedOp: The Hamiltonian of the Wilson Model.
         """
 
-        pass
+        mass_term = self.mass_term()
+        link_term = self.link_term()
+        hopping_term = self.hopping_term()
+        # plaquette_term = self.plaquette_term()
+        return hopping_term + mass_term + link_term
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # def mock_qubit_parts(self):
+    #     #Pure mass term
+    #     mass_op = self.mass_term()
+
+    #     #Pure link_plaquette term
+    #     link_plaquette_op = self.link_term()
+    #     if self._d > 1:
+    #         link_plaquette_op += self.plaquette_term()
+
+    #     #Fermionic Spin and converter
+    #     fermionic_converter = QubitConverter(JordanWignerMapper())
+    #     fermionic_idnty = FermionicOp.one(register_length=mass_op.register_length)
+    #     fermionic_idnty_qubits = fermionic_converter.convert(fermionic_idnty)
+
+    #     #Spin identity and converter
+    #     spin_converter = QubitConverter(LogarithmicMapper())
+    #     spin_idnty = SpinOp(
+    #         "", spin=link_plaquette_op.spin, register_length=link_plaquette_op.register_length
+    #     )
+    #     spin_idnty_qubits = spin_converter.convert(spin_idnty)
+
+    #     #Tensored link_plaquette term
+    #     link_plaquette_qubits = spin_converter.convert(link_plaquette_op)
+    #     link_plaquette_term = fermionic_idnty_qubits ^ link_plaquette_qubits
+
+    #     #Tensored mass term
+    #     mass_qubits = fermionic_converter.convert(mass_op)
+    #     mass_term = mass_qubits ^ spin_idnty_qubits
+
+
+    #     #hopping_term
+    #     hopping_term = None
+    #     for coeff, ferm, spi in self.hopping_term():
+    #         if hopping_term is None:
+    #             hopping_term = coeff * (
+    #             fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
+    #             )
+    #         else:
+    #             hopping_term += coeff * (
+    #                 fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
+    #             )
+
+    #     # Regulator term
+    #     regulator_term = None
+    #     gauss_operators,charge_offset = self.gauss_operators()
+    #     for divergence,charge in gauss_operators:
+    #         if divergence is None:
+    #             div_op = spin_idnty_qubits
+    #         elif divergence == 0:
+    #             continue
+    #         else:
+    #             div_op = spin_converter.convert(divergence)
+    #         ch_op = fermionic_converter.convert(charge)
+    #         gauss_op = (fermionic_idnty_qubits^div_op) #+ (ch_op^spin_idnty_qubits)
+    #         gauss_op -= charge_offset * (fermionic_idnty_qubits^spin_idnty_qubits)
+    #         if regulator_term is None:
+    #             regulator_term = self._lambda * (gauss_op@gauss_op)
+    #         else:
+    #             regulator_term += self._lambda * (gauss_op@gauss_op)
+
+
+    #     return  (self._a**self._d * hopping_term, self._a**self._d * mass_term, self._a**self._d * link_plaquette_term, regulator_term)

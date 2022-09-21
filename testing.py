@@ -3,7 +3,7 @@ from itertools import product
 from qiskit_nature.second_q.properties import LatticeDrawStyle
 from qiskit_nature.second_q.properties.lattices import Lattice, HyperCubicLattice
 from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor
-from qiskit_nature.second_q.operators import FermionicOp, SpinOp,MixedOp
+from qiskit_nature.second_q.operators import FermionicOp, SpinOp, MixedOp
 from qiskit_nature.second_q.mappers import QubitConverter, JordanWignerMapper, LogarithmicMapper, FermionicMapper
 
 from qiskit_nature.second_q.hamiltonians.wilson_sun_hamiltonian import WilsonModel
@@ -12,6 +12,7 @@ import numpy as np
 import time
 
 from qiskit_nature.second_q.properties.lattices import BoundaryCondition
+
 
 
 
@@ -65,7 +66,16 @@ w_model = WilsonModel(  lattice = some_lattice,
 )
 
 
-print(w_model._QLM_spin.idnty(5)@w_model._QLM_spin.idnty(5))
+
+
+
+
+qubit_converter = QubitConverter(mappers = [JordanWignerMapper(),LogarithmicMapper()])
+# print(qubit_converter.convert(w_model.mass_term()))
+idntyspin =w_model._QLM_spin.idnty(2)
+idntyferm = w_model._fermionic_spinor.idnty()
+print(idntyspin)
+print(qubit_converter.convert(MixedOp(([idntyferm,idntyspin],1.0))))
 
 
 

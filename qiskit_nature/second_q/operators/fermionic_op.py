@@ -413,7 +413,6 @@ class FermionicOp(SecondQuantizedOp):
     def compose(self, other: FermionicOp) -> FermionicOp:
         if not isinstance(other, FermionicOp):
             from .mixed_op import MixedOp
-
             return MixedOp(([self, other], 1))
             # else:
             #     raise TypeError(

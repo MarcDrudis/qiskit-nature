@@ -10,25 +10,26 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-"""Spin Mapper."""
+"""Vibrational Mapper."""
 
 from abc import abstractmethod
 
 from qiskit.opflow import PauliSumOp
-from qiskit_nature.operators.second_quantization import SpinOp
+from qiskit_nature.second_q.operators import VibrationalOp
 
 from .qubit_mapper import QubitMapper
 
 
-class SpinMapper(QubitMapper):
-    """Mapper of Spin Operator to Qubit Operator"""
+class VibrationalMapper(QubitMapper):
+    """Mapper of Vibrational Operator to Qubit Operator"""
 
     @abstractmethod
-    def map(self, second_q_op: SpinOp) -> PauliSumOp:
-        """Maps a :class:`~qiskit_nature.operators.second_quantization.SpinOp` to a `PauliSumOp`.
+    def map(self, second_q_op: VibrationalOp) -> PauliSumOp:
+        """Maps a :class:`~qiskit_nature.second_q.operators.VibrationalOp`
+        to a `PauliSumOp`.
 
         Args:
-            second_q_op: the `SpinOp` to be mapped.
+            second_q_op: the `VibrationalOp` to be mapped.
 
         Returns:
             The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.

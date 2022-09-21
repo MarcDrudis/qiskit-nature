@@ -23,7 +23,7 @@ class MixedOp(SecondQuantizedOp):
         self,
         data: SecondQuantizedOp | list[SecondQuantizedOp] |
                tuple[SecondQuantizedOp | list[SecondQuantizedOp],
-                     float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]], complex]]]
+                     float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]], complex]]
     ):
 
         # VibrationalOp is currently not supported
