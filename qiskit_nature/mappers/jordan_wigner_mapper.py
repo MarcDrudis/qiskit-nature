@@ -17,8 +17,7 @@ import numpy as np
 from qiskit.opflow import PauliSumOp
 from qiskit.quantum_info.operators import Pauli
 
-from qiskit_nature.operators.second_quantization import FermionicOp
-
+from qiskit_nature.second_q.operators import FermionicOp
 from .fermionic_mapper import FermionicMapper
 from .qubit_mapper import QubitMapper
 

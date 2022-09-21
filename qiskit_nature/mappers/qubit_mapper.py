@@ -19,8 +19,7 @@ from qiskit.opflow import PauliSumOp
 from qiskit.quantum_info.operators import Pauli, SparsePauliOp
 
 from qiskit_nature import QiskitNatureError
-from qiskit_nature.operators.second_quantization import SecondQuantizedOp
-from qiskit_nature.operators.second_quantization.fermionic_op import FermionicOp
+from qiskit_nature.second_q.operators import FermionicOp, SecondQuantizedOp
 
 
 class QubitMapper(ABC):
@@ -48,7 +47,7 @@ class QubitMapper(ABC):
 
     @abstractmethod
     def map(self, second_q_op: SecondQuantizedOp) -> PauliSumOp:
-        """Maps a :class:`~qiskit_nature.operators.second_quantization.SecondQuantizedOp`
+        """Maps a :class:`~qiskit_nature.second_q.operators.SecondQuantizedOp`
         to a `PauliSumOp`.
 
         Args:

@@ -22,7 +22,8 @@ import numpy as np
 
 from qiskit.opflow import PauliSumOp
 from qiskit.quantum_info.operators import Pauli, SparsePauliOp
-from qiskit_nature.operators.second_quantization import SpinOp
+
+from qiskit_nature.second_q.operators import SpinOp
 from .spin_mapper import SpinMapper
 
 
