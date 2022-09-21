@@ -8,8 +8,8 @@ from typing import cast
 from copy import copy
 import numpy as np
 
-class MixedOp(SecondQuantizedOp):
 
+class MixedOp(SecondQuantizedOp):
     def _assign_data(self, op):
         if isinstance(op, FermionicOp) or isinstance(op, SpinOp):
             if type(op) in self.ops:
@@ -21,9 +21,12 @@ class MixedOp(SecondQuantizedOp):
 
     def __init__(
         self,
-        data: SecondQuantizedOp | list[SecondQuantizedOp] |
-               tuple[SecondQuantizedOp | list[SecondQuantizedOp],
-                     float | complex | list[tuple[int, int, complex]]]
+        data: SecondQuantizedOp
+        | list[SecondQuantizedOp]
+        | tuple[
+            SecondQuantizedOp | list[SecondQuantizedOp],
+            float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]]]],
+        ],
     ):
 
         # VibrationalOp is currently not supported
@@ -46,9 +49,11 @@ class MixedOp(SecondQuantizedOp):
             self._assign_data(op_list)
 
         if not isinstance(data[1], list):
-            self.coeffs = [([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
-                           for f_index in range(len(self.ops[FermionicOp]))
-                           for s_index in range(len(self.ops[SpinOp]))]
+            self.coeffs = [
+                ([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
+                for f_index in range(len(self.ops[FermionicOp]))
+                for s_index in range(len(self.ops[SpinOp]))
+            ]
         else:
             self.coeffs = data[1]
 
@@ -89,7 +94,7 @@ class MixedOp(SecondQuantizedOp):
     def compose(self, other: MixedOp) -> MixedOp:
         raise NotImplementedError
 
-    def add(self, other: FermionicOp | SpinOp) -> MixedOp:
+    def add(self, other: FermionicOp | SpinOp | MixedOp) -> MixedOp:
 
         f_op_list = self.ops[FermionicOp]
         s_op_list = self.ops[SpinOp]
@@ -98,13 +103,13 @@ class MixedOp(SecondQuantizedOp):
         if isinstance(other, FermionicOp):
             f_op_list.append(other)
             new_coeff = 1
-            new_ops = [(FermionicOp, len(f_op_list)-1)]
+            new_ops = [(FermionicOp, len(f_op_list) - 1)]
             new_coeffs.append((new_ops, new_coeff))
 
         elif isinstance(other, SpinOp):
             s_op_list.append(other)
             new_coeff = 1
-            new_ops = [(SpinOp, len(s_op_list)-1)]
+            new_ops = [(SpinOp, len(s_op_list) - 1)]
             new_coeffs.append((new_ops, new_coeff))
 
         else:
