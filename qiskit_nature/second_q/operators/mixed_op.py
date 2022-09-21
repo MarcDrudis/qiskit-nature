@@ -8,8 +8,8 @@ from typing import cast
 from copy import copy
 import numpy as np
 
-class MixedOp(SecondQuantizedOp):
 
+class MixedOp(SecondQuantizedOp):
     def _assign_data(self, op):
         if isinstance(op, FermionicOp) or isinstance(op, SpinOp):
             if type(op) in self.ops:
@@ -21,9 +21,12 @@ class MixedOp(SecondQuantizedOp):
 
     def __init__(
         self,
-        data: SecondQuantizedOp | list[SecondQuantizedOp] |
-               tuple[SecondQuantizedOp | list[SecondQuantizedOp],
-                     float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]], complex]]
+        data: SecondQuantizedOp
+        | list[SecondQuantizedOp]
+        | tuple[
+            SecondQuantizedOp | list[SecondQuantizedOp],
+            float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]]]],
+        ],
     ):
 
         # VibrationalOp is currently not supported
@@ -46,9 +49,11 @@ class MixedOp(SecondQuantizedOp):
             self._assign_data(op_list)
 
         if not isinstance(data[1], list):
-            self.coeffs = [([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
-                           for f_index in range(len(self.ops[FermionicOp]))
-                           for s_index in range(len(self.ops[SpinOp]))]
+            self.coeffs = [
+                ([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
+                for f_index in range(len(self.ops[FermionicOp]))
+                for s_index in range(len(self.ops[SpinOp]))
+            ]
         else:
             self.coeffs = data[1]
 

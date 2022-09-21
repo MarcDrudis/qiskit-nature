@@ -1,6 +1,6 @@
 # This code is part of Qiskit.
 #
-# (C) Copyright IBM 2021, 2022.
+# (C) Copyright IBM 2022.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -11,14 +11,20 @@
 # that they have been altered from the originals.
 
 """The Fermi-Hubbard model"""
+from random import gauss
+from unittest import skip
 import numpy as np
+from qiskit_nature.second_q.mappers.jordan_wigner_mapper import JordanWignerMapper
+from qiskit_nature.second_q.mappers.logarithmic_mapper import LogarithmicMapper
+from qiskit_nature.second_q.mappers.qubit_converter import QubitConverter
 from qiskit_nature.second_q.operators.spin_op import SpinOp
 
-# from qiskit_nature.second_q.operators import MixedOp
+from qiskit_nature.second_q.operators import MixedOp
 from qiskit_nature.second_q.properties import LatticeModel
-from qiskit_nature.second_q.operators import FermionicOp
+from qiskit_nature.second_q.operators import FermionicOp, mixed_op
 
-from qiskit_nature.second_q.properties.lattices import  HyperCubicLattice
+from qiskit_nature.second_q.properties.lattices import HyperCubicLattice
+from qiskit_nature.second_q.operators import MixedOp
 
 from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor, QLM
 
@@ -33,9 +39,12 @@ class WilsonModel(LatticeModel):
         lattice: HyperCubicLattice,
         a: complex,
         r: complex,
+        q: float,
         mass: float,
-        ncomponents: int,
+        e_value: float,
+        lmbda: float,
         representation: List[np.ndarray],
+        electric_field: List[float],
         flavours: int,
         spin: int,
         symmetry: str = "???",
@@ -54,74 +63,172 @@ class WilsonModel(LatticeModel):
         """
         super().__init__(lattice)
         self._a = a
+        self._q = q
         self._r = r
+        self._lambda = lmbda
+        self.e = e_value
         self._mass = mass
         self._d = lattice.dim
         self.representation = representation
-        self.ncomponents = ncomponents
-        self._fermionic_spinor = FermionicSpinor(ncomponents=ncomponents,lattice=lattice)
-        self._QLM_spin = QLM(spin=spin,edges = len(self.lattice.weighted_edge_list))
+        self.ncomponents = int(2 ** ((self._d + 1) // 2))
+        self._fermionic_spinor = FermionicSpinor(ncomponents=self.ncomponents, lattice=lattice)
+        self._QLM_spin = QLM(
+            spin=spin,
+            lattice=lattice,
+            e_value=e_value,
+            electric_field=electric_field,
+        )
 
+    @property
+    def lattice(self) -> HyperCubicLattice:
+        """Return a copy of the input lattice."""
+        return self._lattice.copy()
 
-
-    def mass_term(self):
+    def mass_term(self) -> FermionicOp:
         """Creates the mass term for the wilson hamiltonian."""
         mass_terms = []
         for site in self.lattice.node_indexes:
-            mass_terms.append(self._fermionic_spinor.spinor_product(site,site,self.representation[0]))
-        return (self._mass+self._r*self._d/self._a) * sum(mass_terms)
+            mass_terms.append(
+                self._fermionic_spinor.spinor_product(site, site, self.representation[0])
+            )
+        return (self._mass + self._r * self._d / self._a) * sum(mass_terms)
 
     def hopping_term(self):
         """Creates the hopping term in the hamiltonian."""
         hopping_terms = []
 
-        directions = { np.prod(self.lattice.size[:i], dtype=int):i+1 for i in range(self._d)}
-
         tensor_size = self.representation[0].shape[0]
-        for edge_index, (node_a,node_b) in enumerate(self.lattice.graph.edge_list()):
-            print(edge_index,node_a,node_b)
-            k = directions[np.abs(node_b-node_a)]
-            fermionic_tensor = self.representation[0] @ (self._r * np.eye(tensor_size) + 1.0j*self.representation[k])
-            fermionic_part = self._fermionic_spinor.spinor_product(node_a,node_b,fermionic_tensor)
+        for edge_index, (node_a, node_b) in enumerate(self.lattice.graph.edge_list()):
+            k = self.lattice.direction((node_a, node_b))
+            fermionic_tensor = self.representation[0] @ (
+                self._r * np.eye(tensor_size) + 1.0j * self.representation[np.abs(k)]
+            )
+            fermionic_part = self._fermionic_spinor.spinor_product(node_a, node_b, fermionic_tensor)
 
             bosonic_part = self._QLM_spin.operatorU(edge_index=edge_index)
 
+            mix_op = (1 / 2 * self._a, fermionic_part, bosonic_part)
+            mix_op_dag = (1 / 2 * self._a, fermionic_part.adjoint(), bosonic_part.adjoint())
+            # mixed_op = MixedOp(([fermionic_part, bosonic_part], 1 / (2 * self._a)))
+            # mixed_op_dag = MixedOp(
+            #     ([fermionic_part.adjoint(), bosonic_part.adjoint()], 1 / (2 * self._a))
+            # )
+            hopping_terms.append(mix_op)
+            hopping_terms.append(mix_op_dag)
 
-            # mixed_op = MixedOP(coeff = 1.0, fermionic = fermionic_part, bosonic = bosonic_part)
-            hopping_terms.append((fermionic_part,bosonic_part))
-
-        # return 1/(2*self._a) * sum(hopping_terms) + hc
+        # return sum(hopping_terms) #+hc
         return hopping_terms
 
-    def plaquette_term(self):
+    def plaquette_term(self) -> SpinOp:
         """Creates the plaquette terms for the hamiltonian."""
-        #Note that for a given pair of connected nodes, the edge between them will by shared by
-        #N_plaquettes(a,b) = max(C(a),C(B))-2. Where C(a) dennotes the connectivity of the node a.
 
         if self._d == 1:
             return None
 
         plaquette_terms = []
-        for edge_index, (node_a,node_b) in enumerate(self.lattice.graph.edge_list()):
-            plaquettes = max(self.lattice.graph.degree(node_a),self.lattice.graph.degree(node_b)) - 2
-            operatorU = self._QLM_spin.operatorU(edge_index=edge_index)
-            plaquette_terms.append(plaquettes * (operatorU+operatorU.adjoint()))
+        for plaquette in self.lattice.get_plaquettes():
+            plaquette_terms.append(self._QLM_spin.operator_plaquette(*plaquette))
+            plaquette_terms.append(self._QLM_spin.operator_plaquette(*plaquette).adjoint())
 
-        e = 1
-        return (-1)/(4*e) * sum(plaquette_terms)
+        return (-1) / (4 * self.e) * sum(plaquette_terms)
+
+    def link_term(self) -> SpinOp:
+        link_terms = []
+        for edge_index, (node_a, node_b) in enumerate(self.lattice.graph.edge_list()):
+            op_E = self._QLM_spin.operatorE(edge_index=edge_index)
+            op_E_2 = self._QLM_spin.operatorE_2(edge_index=edge_index)
+            idnty = self._QLM_spin.idnty(edge_index=edge_index)
+            k = self.lattice.direction((node_a, node_b))
+            field = self._QLM_spin.electric_field[k - 1]
+            link_terms.append(op_E_2 + 2 * field * op_E + field**2 * idnty)
+
+        return self.e**2 / 2 * sum(link_terms)
+
+    def gauss_operator(self):
+        charge_offset = -self.e
+        gauss_terms = []
+        for site in self.lattice.node_indexes:
+            divergence = self._QLM_spin.operator_divergence(site)
+            charge = -self._q * self._fermionic_spinor.spinor_product(site, site, None)
+            gauss_terms.append((divergence,charge))
+        return gauss_terms, charge_offset
+
+    def mock_qubit_parts(self):
+        #Pure mass term
+        mass_op = self.mass_term()
+
+        #Pure link_plaquette term
+        link_plaquette_op = self.link_term()
+        if self._d > 1:
+            link_plaquette_op += self.plaquette_term()
+
+        #Fermionic Spin and converter
+        fermionic_converter = QubitConverter(JordanWignerMapper())
+        fermionic_idnty = FermionicOp.one(register_length=mass_op.register_length)
+        fermionic_idnty_qubits = fermionic_converter.convert(fermionic_idnty)
+
+        #Spin identity and converter
+        spin_converter = QubitConverter(LogarithmicMapper())
+        spin_idnty = SpinOp(
+            "", spin=link_plaquette_op.spin, register_length=link_plaquette_op.register_length
+        )
+        spin_idnty_qubits = spin_converter.convert(spin_idnty)
+
+        #Tensored link_plaquette term
+        link_plaquette_qubits = spin_converter.convert(link_plaquette_op)
+        link_plaquette_term = fermionic_idnty_qubits ^ link_plaquette_qubits
+
+        #Tensored mass term
+        mass_qubits = fermionic_converter.convert(mass_op)
+        mass_term = mass_qubits ^ spin_idnty_qubits
 
 
+        #hopping_term
+        hopping_term = None
+        for coeff, ferm, spi in self.hopping_term():
+            if hopping_term is None:
+                hopping_term = coeff * (
+                fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
+                )
+            else:
+                hopping_term += coeff * (
+                    fermionic_converter.convert(ferm) ^ spin_converter.convert(spi)
+                )
 
-    def second_q_ops(self, display_format: str = "sparse") :
+        # Regulator term
+        regulator_term = None
+        gauss_operators,charge_offset = self.gauss_operator()
+        for divergence,charge in gauss_operators:
+            if divergence is None:
+                div_op = spin_idnty_qubits
+            elif divergence == 0:
+                continue
+            else:
+                div_op = spin_converter.convert(divergence)
+            ch_op = fermionic_converter.convert(charge)
+            gauss_op = (fermionic_idnty_qubits^div_op) + (ch_op^spin_idnty_qubits)
+            gauss_op -= charge_offset * (fermionic_idnty_qubits^spin_idnty_qubits)
+            if regulator_term is None:
+                regulator_term = self._lambda * (gauss_op@gauss_op)
+            else:
+                regulator_term += self._lambda * (gauss_op@gauss_op)
+
+
+        return  (self._a**self._d * hopping_term, self._a**self._d * mass_term, self._a**self._d * link_plaquette_term, regulator_term)
+
+
+    def mock_qubit_operator(self):
+        return sum(self.mock_qubit_parts())
+
+    def second_q_ops(self, display_format: str = "sparse"):
         """Return the Hamiltonian of the Wilson Model in terms of `MixedOp.
 
         Args:
             display_format: If sparse, the label is represented sparsely during output.
-                If dense, the label is represented densely during output. Defaults to "dense".
+                If dense, the label is represented densely during output. Defaults to "sparse".
 
         Returns:
             MixedOp: The Hamiltonian of the Wilson Model.
         """
-
 
         pass

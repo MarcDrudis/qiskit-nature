@@ -28,7 +28,7 @@ from typing import (
     Tuple,
     TypeVar,
     Union,
-    Sequence
+    Sequence,
 )
 
 import numpy as np
@@ -215,8 +215,8 @@ class QubitConverter:
         self,
         second_q_op: SecondQuantizedOp,
         num_particles: Optional[list[Tuple[int, int]]] = None,
-        sector_locator: Optional[list[
-            Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]]
+        sector_locator: Optional[
+            list[Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]]
         ] = None,
     ) -> PauliSumOp:
         """
@@ -459,7 +459,9 @@ class QubitConverter:
             if isinstance(self._mappers, list) and len(self._mappers) > 1:
                 return self._map_multiple(second_q_op)
             else:
-                raise TypeError("The conversion of MixedOp requires at least a fermionic and spin mapper.")
+                raise TypeError(
+                    "The conversion of MixedOp requires at least a fermionic and spin mapper."
+                )
 
         else:
             if isinstance(self._mappers, list):
@@ -488,7 +490,9 @@ class QubitConverter:
         max_f_reg_length = 0
         for f_op in operators[FermionicOp]:
             q_op = apply_map_sym(f_op, fermionic_mapper)
-            max_f_reg_length = q_op.num_qubits if q_op.num_qubits > max_f_reg_length else max_f_reg_length
+            max_f_reg_length = (
+                q_op.num_qubits if q_op.num_qubits > max_f_reg_length else max_f_reg_length
+            )
             qubit_f_ops.append(q_op)
 
         # convert all spins and store in list
@@ -496,7 +500,9 @@ class QubitConverter:
         max_s_reg_length = 0
         for s_op in operators[SpinOp]:
             q_op = apply_map_sym(s_op, spin_mapper)
-            max_s_reg_length = q_op.num_qubits if q_op.num_qubits > max_s_reg_length else max_s_reg_length
+            max_s_reg_length = (
+                q_op.num_qubits if q_op.num_qubits > max_s_reg_length else max_s_reg_length
+            )
             qubit_s_ops.append(q_op)
 
         f_paulis = I if max_f_reg_length > 0 else None

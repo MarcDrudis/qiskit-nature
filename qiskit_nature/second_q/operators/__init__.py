@@ -34,10 +34,4 @@ from .spin_op import SpinOp
 from .vibrational_op import VibrationalOp
 from .mixed_op import MixedOp
 
-__all__ = [
-    "FermionicOp",
-    "SecondQuantizedOp",
-    "SpinOp",
-    "VibrationalOp",
-    "MixedOp"
-]
+__all__ = ["FermionicOp", "SecondQuantizedOp", "SpinOp", "VibrationalOp", "MixedOp"]
