@@ -12,26 +12,19 @@
 
 """The Fermi-Hubbard model"""
 import numpy as np
-from qiskit_nature.second_q.mappers.jordan_wigner_mapper import JordanWignerMapper
-from qiskit_nature.second_q.mappers.logarithmic_mapper import LogarithmicMapper
-from qiskit_nature.second_q.mappers.qubit_converter import QubitConverter
 from qiskit_nature.second_q.operators.spin_op import SpinOp
 
 from qiskit_nature.second_q.operators import MixedOp
 from qiskit_nature.second_q.properties import LatticeModel
-from qiskit_nature.second_q.operators import FermionicOp, mixed_op
+from qiskit_nature.second_q.operators import FermionicOp
 
 from qiskit_nature.second_q.properties.lattices import HyperCubicLattice
-from qiskit_nature.second_q.operators import MixedOp
 
 from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor, QLM
 
-from typing import List
-
-
 class WilsonModel(LatticeModel):
     """The Wilson Model.
-    
+
     Attributes:
         lattice: Lattice on which the model is defined.
         lattice_constant: Lattice Constant.
@@ -54,8 +47,8 @@ class WilsonModel(LatticeModel):
         charge: float,
         mass: float,
         constraint_coefficient: float,
-        representation: List[np.ndarray],
-        electric_field: List[float],
+        representation: list[np.ndarray],
+        electric_field: list[float],
         flavours: int,
         spin: int,
     ):
@@ -79,10 +72,12 @@ class WilsonModel(LatticeModel):
         self.wilson_parameter = wilson_parameter
         self.mass = mass
         self.constraint_coefficient = constraint_coefficient
-        self.representation = representation   
+        self.representation = representation
         self.flavours = flavours
-        self.fermionic_spinor = FermionicSpinor(ncomponents=self.flavours * int(2 ** ((self.dimension + 1) // 2)), lattice=lattice)
-        self.QLM_spin = QLM(
+        self.fermionic_spinor = FermionicSpinor(
+            spinor_size=self.flavours * int(2 ** ((self.dimension + 1) // 2)), lattice=lattice
+        )
+        self.bosonic_qlm = QLM(
             spin=spin,
             lattice=lattice,
             charge=charge,
@@ -97,15 +92,18 @@ class WilsonModel(LatticeModel):
     @property
     def spin(self):
         """Returns the spin of the Quantum Link Model"""
-        return self.QLM_spin.spin
+        return self.bosonic_qlm.spin
+
     @property
     def electric_field(self):
         """Returns the spin of the Quantum Link Model"""
-        return self.QLM_spin.electric_field
+        return self.bosonic_qlm.electric_field
+
     @property
     def charge(self):
         """Returns the charge of the Quantum Link Model"""
-        return self.QLM_spin.charge
+        return self.bosonic_qlm.charge
+
     @property
     def dimension(self):
         """Dimension of the lattice"""
@@ -118,7 +116,7 @@ class WilsonModel(LatticeModel):
             mass_terms.append(
                 self.fermionic_spinor.spinor_product(site, site, self.representation[0])
             )
-        return (self.mass + self.wilson_parameter * self._d / self.lattice_constant) * sum(
+        return (self.mass + self.wilson_parameter * self.dimension / self.lattice_constant) * sum(
             mass_terms
         )
 
@@ -137,7 +135,7 @@ class WilsonModel(LatticeModel):
             fermionic_part = self.fermionic_spinor.spinor_product(node_a, node_b, fermionic_tensor)
             # fermionic_part = self.fermionic_spinor.spinor_product(node_b, node_a, fermionic_tensor)
 
-            bosonic_part = self.QLM_spin.operatorU(edge_index=edge_index)
+            bosonic_part = self.bosonic_qlm.operator_u(edge_index=edge_index)
 
             mix_op = MixedOp(([fermionic_part, bosonic_part], 1 / (2 * self.lattice_constant)))
             mix_op_dag = MixedOp(
@@ -153,13 +151,13 @@ class WilsonModel(LatticeModel):
     def plaquette_term(self) -> SpinOp:
         """Creates the plaquette terms for the hamiltonian."""
 
-        if self._d == 1:
+        if self.dimension == 1:
             return None
 
         plaquette_terms = []
         for plaquette in self.lattice.get_plaquettes():
-            plaquette_terms.append(self.QLM_spin.operator_plaquette(*plaquette))
-            plaquette_terms.append(self.QLM_spin.operator_plaquette(*plaquette).adjoint())
+            plaquette_terms.append(self.bosonic_qlm.operator_plaquette(*plaquette))
+            plaquette_terms.append(self.bosonic_qlm.operator_plaquette(*plaquette).adjoint())
 
         return (-1) / (4 * self.charge) * sum(plaquette_terms)
 
@@ -167,32 +165,35 @@ class WilsonModel(LatticeModel):
         """Creates the link terms of the hamiltonian."""
         link_terms = []
         for edge_index, (node_a, node_b) in enumerate(self.lattice.graph.edge_list()):
-            op_E = self.QLM_spin.operatorE(edge_index=edge_index)
-            op_E_2 = self.QLM_spin.operatorE_2(edge_index=edge_index)
-            idnty = self.QLM_spin.idnty()
+            operator_e = self.bosonic_qlm.operator_e(edge_index=edge_index)
+            operatror_e2 = self.bosonic_qlm.operator_e2(edge_index=edge_index)
+            idnty = self.bosonic_qlm.idnty()
             k = self.lattice.direction((node_a, node_b))
-            field = self.QLM_spin.electric_field[k - 1]
-            link_terms.append(op_E_2 + 2 * field * op_E + field**2 * idnty)
+            field = self.bosonic_qlm.electric_field[k - 1]
+            link_terms.append(operatror_e2 + 2 * field * operator_e + field**2 * idnty)
 
         return self.charge**2 / 2 * sum(link_terms)
 
-    def gauss_operators(self) -> List[MixedOp]:
+    def gauss_operators(self) -> list[MixedOp]:
         """Returns a list of the gauss operators imposing constraints over each node of the graph."""
         charge_offset = -self.charge
         gauss_terms = []
         for site in self.lattice.node_indexes:
             gauss_term = MixedOp(
-                ([self.fermionic_spinor.idnty(), self.QLM_spin.operator_divergence(site)], 1)
+                ([self.fermionic_spinor.idnty(), self.bosonic_qlm.operator_divergence(site)], 1)
             )
             gauss_term += -self.charge * self.fermionic_spinor.spinor_product(site, site, None)
             gauss_term += MixedOp(
-                ([self.fermionic_spinor.idnty(), self.QLM_spin.idnty()], charge_offset)
+                ([self.fermionic_spinor.idnty(), self.bosonic_qlm.idnty()], charge_offset)
             )
             gauss_terms.append(gauss_term)
         return gauss_terms
 
-    def second_q_ops(self):
-        """Returns the Hamiltonian of the Wilson Model in terms of `MixedOp`."""
+    def second_q_ops(self, display_format: str|None = None)-> MixedOp:
+        """Returns the Hamiltonian of the Wilson Model in terms of `MixedOp`.
+        Args:
+            display_format: We need to wait until MixedOps is finished
+        """
 
         mass_term = self.mass_term()
         link_term = self.link_term()

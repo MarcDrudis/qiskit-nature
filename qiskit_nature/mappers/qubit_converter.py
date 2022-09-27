@@ -246,61 +246,6 @@ class QubitConverter:
 
         return tapered_op
 
-        # mix_coefficients = second_q_op.coeffs
-        # operators = second_q_op.ops
-        #
-        # for mapper in self._mappers:
-        #     if isinstance(mapper, FermionicMapper):
-        #         fermionic_mapper = mapper
-        #     else:
-        #         spin_mapper = mapper
-        #
-        # def apply_map_sym(op, mapper):
-        #     qubit_op = mapper.map(op)
-        #     reduced_op = self._two_qubit_reduce(qubit_op, num_particles)
-        #     tapered_op, z2symmetries = self._find_taper_op(reduced_op, sector_locator)
-        #
-        #     self._num_particles = num_particles
-        #     self._z2symmetries = z2symmetries
-        #
-        #     return tapered_op
-        #
-        # # convert all fermionics and store in list
-        # tapered_f_ops = []
-        # max_f_reg_length = 0
-        # for f_op in operators[FermionicOp]:
-        #     t_op = apply_map_sym(f_op, fermionic_mapper)
-        #
-        #     max_f_reg_length = t_op.num_qubits if t_op.num_qubits > max_f_reg_length else max_f_reg_length
-        #     tapered_f_ops.append(t_op)
-        #
-        # # convert all spins and store in list
-        # tapered_s_ops = []
-        # max_s_reg_length = 0
-        # for s_op in operators[SpinOp]:
-        #     t_op = apply_map_sym(s_op, spin_mapper)
-        #     max_s_reg_length = t_op.num_qubits if t_op.num_qubits > max_s_reg_length else max_s_reg_length
-        #     tapered_s_ops.append(t_op)
-        #
-        # f_paulis = I if max_f_reg_length > 0 else None
-        # for i in range(max_f_reg_length-1):
-        #     f_paulis^=I
-        #
-        # s_paulis = I if max_s_reg_length > 0 else None
-        # for i in range(max_s_reg_length-1):
-        #     s_paulis^=I
-        #
-        # tapered_ops = []
-        # for c in mix_coefficients:
-        #     if len(c[0]) > 1:
-        #         tapered_ops.append(tapered_f_ops[c[0][0][1]] ^ tapered_s_ops[c[0][1][1]] * c[1])
-        #     elif c[0][0][0] is FermionicOp:
-        #         tapered_ops.append(tapered_f_ops[c[0][0][1]] ^ s_paulis * c[1])
-        #     elif c[0][0][0] is SpinOp:
-        #         tapered_ops.append(f_paulis ^ tapered_s_ops[c[0][0][1]] * c[1])
-        #
-        # return sum(tapered_ops)
-
     def convert_only(
         self,
         second_q_op: SecondQuantizedOp,
