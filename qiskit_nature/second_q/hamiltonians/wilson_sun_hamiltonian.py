@@ -30,7 +30,21 @@ from typing import List
 
 
 class WilsonModel(LatticeModel):
-    """The Wilson Model."""
+    """The Wilson Model.
+    
+    Attributes:
+        lattice: Lattice on which the model is defined.
+        lattice_constant: Lattice Constant.
+        wilson_parameter: Wilson Parameter.
+        mass: Mass.
+        constraint_coefficient: Coefficient added in front of the regularization term in
+            the hamiltonian
+        representation: Matrix representation of the dirac operators for the spinnor product.
+        flavours: Number of flavours.
+        fermionic_spinor (FermionicSpinor): Represents the fermionic part of the system.
+        QLM_spin (QLM): Represents the bosonic part of the system.
+
+    """
 
     def __init__(
         self,
@@ -44,30 +58,30 @@ class WilsonModel(LatticeModel):
         electric_field: List[float],
         flavours: int,
         spin: int,
-        symmetry: str = "???",
-        encoding="quantum_link",
     ):
         """
         Args:
             lattice: Lattice on which the model is defined.
-            a: Lattice Constant
-            r: Wilson Parameter
-            mass: Mass
-            flavours: Number of flavours
-            spin: Twice the value of the spin for the field operator in the Quantum Link Model.
-            symmetry: Symmetry of the bosonic model. Can be U(1) or SU(n).
-            encoding: The encoding of the model. Can only be "quantum_link".
+            lattice_constant: Lattice Constant.
+            wilson_parameter: Wilson Parameter.
+            charge: Charge
+            mass: Mass.
+            constraint_coefficient: Coefficient added in front of the regularization term in
+                the hamiltonian
+            representation: Matrix representation of the dirac operators for the spinnor product.
+            electric_field: External electric field applied on the system.
+            flavours: Number of flavours.
+            spin: Spin of a bosonic operator.
         """
+
         super().__init__(lattice)
         self.lattice_constant = lattice_constant
-        self.charge = charge
         self.wilson_parameter = wilson_parameter
-        self.constraint_coefficient = constraint_coefficient
         self.mass = mass
-        self._dimension = lattice.dim
-        self.representation = representation
-        self._ncomponents = int(2 ** ((self._d + 1) // 2))
-        self.fermionic_spinor = FermionicSpinor(ncomponents=self._ncomponents, lattice=lattice)
+        self.constraint_coefficient = constraint_coefficient
+        self.representation = representation   
+        self.flavours = flavours
+        self.fermionic_spinor = FermionicSpinor(ncomponents=self.flavours * int(2 ** ((self.dimension + 1) // 2)), lattice=lattice)
         self.QLM_spin = QLM(
             spin=spin,
             lattice=lattice,
@@ -79,6 +93,23 @@ class WilsonModel(LatticeModel):
     def lattice(self) -> HyperCubicLattice:
         """Return a copy of the input lattice."""
         return self._lattice.copy()
+
+    @property
+    def spin(self):
+        """Returns the spin of the Quantum Link Model"""
+        return self.QLM_spin.spin
+    @property
+    def electric_field(self):
+        """Returns the spin of the Quantum Link Model"""
+        return self.QLM_spin.electric_field
+    @property
+    def charge(self):
+        """Returns the charge of the Quantum Link Model"""
+        return self.QLM_spin.charge
+    @property
+    def dimension(self):
+        """Dimension of the lattice"""
+        return self.lattice.dim
 
     def mass_term(self) -> FermionicOp:
         """Creates the mass term for the wilson hamiltonian."""
@@ -92,9 +123,7 @@ class WilsonModel(LatticeModel):
         )
 
     def hopping_term(self) -> MixedOp:
-        """Creates the hopping term in the hamiltonian.
-        Note that this only creates the first term and we still need to add the conjugate transpose.
-        """
+        """Creates the hopping term in the hamiltonian."""
         hopping_terms = []
 
         tensor_size = self.representation[0].shape[0]
@@ -132,9 +161,10 @@ class WilsonModel(LatticeModel):
             plaquette_terms.append(self.QLM_spin.operator_plaquette(*plaquette))
             plaquette_terms.append(self.QLM_spin.operator_plaquette(*plaquette).adjoint())
 
-        return (-1) / (4 * self.e) * sum(plaquette_terms)
+        return (-1) / (4 * self.charge) * sum(plaquette_terms)
 
     def link_term(self) -> SpinOp:
+        """Creates the link terms of the hamiltonian."""
         link_terms = []
         for edge_index, (node_a, node_b) in enumerate(self.lattice.graph.edge_list()):
             op_E = self.QLM_spin.operatorE(edge_index=edge_index)
@@ -144,11 +174,11 @@ class WilsonModel(LatticeModel):
             field = self.QLM_spin.electric_field[k - 1]
             link_terms.append(op_E_2 + 2 * field * op_E + field**2 * idnty)
 
-        return self.e**2 / 2 * sum(link_terms)
+        return self.charge**2 / 2 * sum(link_terms)
 
     def gauss_operators(self) -> List[MixedOp]:
         """Returns a list of the gauss operators imposing constraints over each node of the graph."""
-        charge_offset = -self.e
+        charge_offset = -self.charge
         gauss_terms = []
         for site in self.lattice.node_indexes:
             gauss_term = MixedOp(
