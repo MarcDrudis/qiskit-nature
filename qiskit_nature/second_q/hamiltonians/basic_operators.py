@@ -11,10 +11,10 @@
 # that they have been altered from the originals.
 
 """Basic operators for the wilson hamiltonian"""
-from typing import List
+import numpy as np
 from qiskit_nature.second_q.operators import FermionicOp, SpinOp
 from qiskit_nature.second_q.properties.lattices import HyperCubicLattice
-import numpy as np
+
 
 
 class FermionicSpinor:
@@ -34,7 +34,9 @@ class FermionicSpinor:
         self.spinor_size = spinor_size
         self.register_lenght = lattice.num_nodes * spinor_size
 
-    def spinor_product(self, site_left: int, site_right: int, operator: np.ndarray | None) -> FermionicOp:
+    def spinor_product(
+        self, site_left: int, site_right: int, operator: np.ndarray | None
+    ) -> FermionicOp:
         """Returns the spinor product of the fermions in two lattice nodes with respect
         to a given operator.
         Args:
@@ -48,42 +50,42 @@ class FermionicSpinor:
         fermionic_sum = []
         for (a, b), v in np.ndenumerate(operator):
             if v != 0:
-                index_A = self.spinor_size * site_left + a
-                index_B = self.spinor_size * site_right + b
+                index_a = self.spinor_size * site_left + a
+                index_b = self.spinor_size * site_right + b
                 fermionic_sum.append(
                     v
                     * (
-                        FermionicOp(f"+_{index_A}", register_length=self.register_lenght)
-                        @ FermionicOp(f"-_{index_B}", register_length=self.register_lenght)
+                        FermionicOp(f"+_{index_a}", register_length=self.register_lenght)
+                        @ FermionicOp(f"-_{index_b}", register_length=self.register_lenght)
                     )
                 )
         return sum(fermionic_sum)
 
-    def idnty(self)->FermionicOp:
+    def idnty(self) -> FermionicOp:
         """Returns the identity on the Fermionic system."""
         return FermionicOp("", register_length=self.register_lenght)
 
 
 class QLM:
     """Class representing the Bosons sitting on the edges of a
-    :class"`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice`.
+        :class"`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice`.
 
-    This Bosons are actually represented by `~.qiskit_nature.second_q.operators.SpinOp` and we
-    will have only one operator by edge.
+        This Bosons are actually represented by `~.qiskit_nature.second_q.operators.SpinOp` and we
+        will have only one operator by edge.
 
-    The resulting operator will have as many spin operators as edges there are in the lattice.
-    The ordering of the registers corresponds to the ordering of the edges in the lattice, so
-    the nth spin operator will sit in the edge with index `n` of the lattice. In order to see
-    which index corresponds to each edge, one can draw the lattice
-    :meth:`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice.indexed_graph`.
-)
+        The resulting operator will have as many spin operators as edges there are in the lattice.
+        The ordering of the registers corresponds to the ordering of the edges in the lattice, so
+        the nth spin operator will sit in the edge with index `n` of the lattice. In order to see
+        which index corresponds to each edge, one can draw the lattice
+        :meth:`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice.indexed_graph`.
+    )
     """
+
     def __init__(
-        self, spin: int, lattice: HyperCubicLattice, charge: float, electric_field: List[float]
+        self, spin: int, lattice: HyperCubicLattice, charge: float, electric_field: list[float]
     ) -> None:
 
         self.spin = spin
-        self.ds = 2 * spin + 1
         self.lattice = lattice
         self.edges = len(lattice.weighted_edge_list)
         self.charge = charge
@@ -93,33 +95,33 @@ class QLM:
         """Returns the identity on the Bosonic system."""
         return SpinOp("I_0", spin=self.spin, register_length=self.edges)
 
-    def operatorU(self, edge_index:int):
+    def operator_u(self, edge_index: int):
         """Returns the Operator U in the Wilson Hamiltonian.
         Args:
-            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.
         """
         return (self.spin * (self.spin + 1)) ** (-0.5) * SpinOp(
             f"+_{edge_index}", spin=self.spin, register_length=self.edges
         )
 
-    def operatorE(self, edge_index):
+    def operator_e(self, edge_index:int):
         """Returns the Operator E in the Wilson Hamiltonian.
         Args:
-            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.
         """
         return self.charge * SpinOp(f"Z_{edge_index}", spin=self.spin, register_length=self.edges)
 
-    def operatorE_2(self, edge_index):
+    def operator_e2(self, edge_index:int):
         """Returns the Operator E^2 in the Wilson Hamiltonian.
         Args:
-            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.
         """
         return (self.charge**2) * SpinOp(
             f"Z_{edge_index}^2", spin=self.spin, register_length=self.edges
         )
 
-    #This operator could potentially create sign issues. We need to get it checked.
-    def operator_plaquette(self, nodes: tuple(int)):
+    # This operator could potentially create sign issues. We need to get it checked.
+    def operator_plaquette(self, nodes: tuple(int,int,int,int)):
         """Returns the plaquette operator for a given plaquette.
 
         The plaquette operator for a given square consists of the product of the botom
@@ -135,7 +137,7 @@ class QLM:
             register_length=self.edges,
         )
 
-    def operator_divergence(self, node):
+    def operator_divergence(self, node:int):
         """Returns the divergence for the field arround a given node.
 
         In case of being next to a border with open boundary conditions the `unexisting`
@@ -149,5 +151,5 @@ class QLM:
         for neighbor in self.lattice.graph.neighbors(node):
             directn = self.lattice.direction((node, neighbor))
             edge_index = indexed_graph.get_edge_data(node, neighbor)
-            divergence.append(np.sign(-directn) * self.operatorE(edge_index))
+            divergence.append(np.sign(-directn) * self.operator_e(edge_index))
         return sum(divergence)
