@@ -11,8 +11,6 @@
 # that they have been altered from the originals.
 
 """Basic operators for the wilson hamiltonian"""
-
-from turtle import left, right
 from typing import List
 from qiskit_nature.second_q.operators import FermionicOp, SpinOp
 from qiskit_nature.second_q.properties.lattices import HyperCubicLattice
