@@ -184,7 +184,7 @@ class HyperCubicLattice(Lattice):
         """
         return self._boundary_condition
 
-    def direction(self, edge: tuple[int, int]) -> int|None:
+    def direction(self, edge: tuple[int, int]) -> int | None:
         """Returns the direction of a given edge.
 
         1,2,3 correspond to x,y,z directions respectively (generalizes to arbitrary dimensions).
@@ -194,17 +194,15 @@ class HyperCubicLattice(Lattice):
             edge: A tuple with the first and the second node that form a given edge.
 
         """
-        if not self.graph.has_edge(edge[0],edge[1]):
+        if not self.graph.has_edge(edge[0], edge[1]):
             return None
 
         diff = self._index_to_coordinate(edge[1]) - self._index_to_coordinate(edge[0])
         directn = diff.nonzero()[0][0]
         if np.abs(diff[directn]) == 1:
-            return (np.sign(diff[directn]) * (directn+1))
+            return np.sign(diff[directn]) * (directn + 1)
         else:
-            return (- np.sign(diff[directn]) * (directn+1))
-
-
+            return -np.sign(diff[directn]) * (directn + 1)
 
     def belongs_to_face(self, node: int) -> AbstractSet[int]:
         """For a given node, returns a set of the faces that the node belongs to.
@@ -225,14 +223,16 @@ class HyperCubicLattice(Lattice):
         return faces
 
     def indexed_graph(self):
+        """Auxiliary function that returns an identical graph with edge indices as edge_parameters."""
         graph_indexed = self.graph
-
         for index in graph_indexed.edge_indices():
             graph_indexed.update_edge_by_index(index, index)
-
         return graph_indexed
 
     def base_connections(self):
+        """Returns a list with all the possible numbers that the index of a given node
+        to a neighbouring node.
+        """
         base_connections = []
         for i in range(self.dim):
             if self.boundary_condition[i] == BoundaryCondition.PERIODIC:
