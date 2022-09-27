@@ -20,26 +20,38 @@ import numpy as np
 
 
 class FermionicSpinor:
-    def __init__(self, ncomponents: int, lattice: HyperCubicLattice) -> None:
-        self.ncomponents = ncomponents
-        self.lattice = lattice
-        self.register_lenght = lattice.num_nodes * ncomponents
+    """Represents the Fermionic Spinors sitting on the nodes of a
+    :class"`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice`.
 
-    def spinor_product(self, site_left: int, site_right: int, operator: np.ndarray | None):
-        """
+    Depending on the dimension of the lattice, the fermion sitting at a given
+    node will be represented by spinors with `spinor_size` ammount of components.
+
+    The resulting operator will have a size of `spinor_size * num_nodes`. The first
+    `spinor_size` registers will correspond to the spinor at node 0, then the spinor
+    at node 1 and so on for all the nodes in the lattice.
+
+    """
+
+    def __init__(self, spinor_size: int, lattice: HyperCubicLattice) -> None:
+        self.spinor_size = spinor_size
+        self.register_lenght = lattice.num_nodes * spinor_size
+
+    def spinor_product(self, site_left: int, site_right: int, operator: np.ndarray | None) -> FermionicOp:
+        """Returns the spinor product of the fermions in two lattice nodes with respect
+        to a given operator.
         Args:
             site_left: Site of the leftmost spinor.
             site_right: Site of the rightmost spinor.
-            operator: Operator to to do the tensor product of both spinors.
-                In this case it will be some gamma matrix.
+            operator: Operator to to do the tensor product of both spinors. If `None` is
+            given the operator will default to the identity.
         """
         if operator is None:
-            operator = np.eye(N=self.ncomponents, M=self.ncomponents)
+            operator = np.eye(N=self.spinor_size, M=self.spinor_size)
         fermionic_sum = []
         for (a, b), v in np.ndenumerate(operator):
             if v != 0:
-                index_A = self.ncomponents * site_left + a
-                index_B = self.ncomponents * site_right + b
+                index_A = self.spinor_size * site_left + a
+                index_B = self.spinor_size * site_right + b
                 fermionic_sum.append(
                     v
                     * (
@@ -47,70 +59,97 @@ class FermionicSpinor:
                         @ FermionicOp(f"-_{index_B}", register_length=self.register_lenght)
                     )
                 )
+        return sum(fermionic_sum)
 
-        # Here I should get rid of the additional phase
-        return sum(fermionic_sum)# * -1.0j
-
-    def idnty(self):
-        return FermionicOp("",register_length=self.register_lenght)
+    def idnty(self)->FermionicOp:
+        """Returns the identity on the Fermionic system."""
+        return FermionicOp("", register_length=self.register_lenght)
 
 
 class QLM:
+    """Class representing the Bosons sitting on the edges of a
+    :class"`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice`.
+
+    This Bosons are actually represented by `~.qiskit_nature.second_q.operators.SpinOp` and we
+    will have only one operator by edge.
+
+    The resulting operator will have as many spin operators as edges there are in the lattice.
+    The ordering of the registers corresponds to the ordering of the edges in the lattice, so
+    the nth spin operator will sit in the edge with index `n` of the lattice. In order to see
+    which index corresponds to each edge, one can draw the lattice
+    :meth:`~.qiskit_nature.second_q.properties.lattices.HyperCubicLattice.indexed_graph`.
+)
+    """
     def __init__(
-        self, spin: int, lattice: HyperCubicLattice, e_value: float, electric_field: List[float]
+        self, spin: int, lattice: HyperCubicLattice, charge: float, electric_field: List[float]
     ) -> None:
 
         self.spin = spin
         self.ds = 2 * spin + 1
         self.lattice = lattice
         self.edges = len(lattice.weighted_edge_list)
-        self.e = e_value
+        self.charge = charge
         self.electric_field = electric_field
 
     def idnty(self):
+        """Returns the identity on the Bosonic system."""
         return SpinOp("I_0", spin=self.spin, register_length=self.edges)
 
-    def operatorU(self, edge_index):
+    def operatorU(self, edge_index:int):
+        """Returns the Operator U in the Wilson Hamiltonian.
+        Args:
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+        """
         return (self.spin * (self.spin + 1)) ** (-0.5) * SpinOp(
             f"+_{edge_index}", spin=self.spin, register_length=self.edges
         )
 
     def operatorE(self, edge_index):
-        return self.e * SpinOp(f"Z_{edge_index}", spin=self.spin, register_length=self.edges)
+        """Returns the Operator E in the Wilson Hamiltonian.
+        Args:
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+        """
+        return self.charge * SpinOp(f"Z_{edge_index}", spin=self.spin, register_length=self.edges)
 
     def operatorE_2(self, edge_index):
-        return (self.e**2) * SpinOp(f"Z_{edge_index}^2", spin=self.spin, register_length=self.edges)
+        """Returns the Operator E^2 in the Wilson Hamiltonian.
+        Args:
+            edge_index: The operator will correspond to the Boson sitting at `edge_index`.        
+        """
+        return (self.charge**2) * SpinOp(
+            f"Z_{edge_index}^2", spin=self.spin, register_length=self.edges
+        )
 
-    def operator_plaquette(self, node_a: int, node_b: int, node_c: int, node_d: int):
-        return (self.spin * (self.spin + 1)) ** (-2) * SpinOp(
-            f"+_{node_a} +_{node_b} -_{node_c} -_{node_d}",
+    #This operator could potentially create sign issues. We need to get it checked.
+    def operator_plaquette(self, nodes: tuple(int)):
+        """Returns the plaquette operator for a given plaquette.
+
+        The plaquette operator for a given square consists of the product of the botom
+        and right `U` operators and the adjoint of the top and left edges.
+
+        Args:
+            nodes: Tupple with the nodes that will form the plaquette term in the
+                following order (bottom,right,top,left).
+        """
+        return (self.spin * (self.spin + 1)) ** (-8) * SpinOp(
+            f"+_{nodes[0]} +_{nodes[1]} -_{nodes[2]} -_{nodes[3]}",
             spin=self.spin,
             register_length=self.edges,
         )
 
     def operator_divergence(self, node):
+        """Returns the divergence for the field arround a given node.
+
+        In case of being next to a border with open boundary conditions the `unexisting`
+        edge will not be added.
+
+        Args:
+            node: Node arround which the divergence is computed.
+        """
         indexed_graph = self.lattice.indexed_graph()
         divergence = []
         for neighbor in self.lattice.graph.neighbors(node):
-            directn = self.lattice.direction((node,neighbor))
-            edge_index = indexed_graph.get_edge_data(node,neighbor)
-            divergence.append(np.sign(-directn)*self.operatorE(edge_index))
+            directn = self.lattice.direction((node, neighbor))
+            edge_index = indexed_graph.get_edge_data(node, neighbor)
+            divergence.append(np.sign(-directn) * self.operatorE(edge_index))
         return sum(divergence)
-
-
-        # #Still not good enough for boundary conditions
-        # divergence = []
-
-
-        # #This dictionary indexes the coefficient that we need to add to a given operator depending on
-        # #whether a given edge it's at its right(-) or left(+).
-        # coeff_sign = {(-1,0):+1,(1,0):-1,(-1,1):-1,(1,1):+1}
-
-        # for bound_direction in self.lattice.base_connections():
-        #     for periodic,direction in enumerate(bound_direction):
-        #         for sign in [+1,-1]:
-        #             if 0<=node +sign*direction<=self.lattice.num_nodes and indexed_graph.has_edge(node,node+ sign * direction):
-        #                 edge_index = indexed_graph.get_edge_data(node, node +sign*direction)
-        #                 divergence.append(coeff_sign[(sign,periodic)]*self.operatorE(edge_index))
-
-        # return sum(divergence)

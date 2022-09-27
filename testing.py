@@ -18,7 +18,7 @@ from qiskit_nature.second_q.properties.lattices import BoundaryCondition
 
 
 
-some_lattice = HyperCubicLattice((5,),self_loops=False,boundary_condition=BoundaryCondition.OPEN)
+some_lattice = HyperCubicLattice((3,),self_loops=False,boundary_condition=BoundaryCondition.OPEN)
 
 
 
@@ -43,12 +43,21 @@ representation3 = [
     np.array([[0,0,1,0],[0,0,0,-1],[-1,0,0,0],[0,1,0,0]])
 ]
 
-representation2 = [
-    np.array([[0,1],[1,0]]),
-    np.array([[0,1j],[-1j,0]]),
-    np.array([[1,0],[0,-1]]),
-]
 
+sigmax = np.array([[0.+0.j, 1.+0.j],
+                   [1.+0.j, 0.+0.j]])
+
+sigmay = np.array([[0.+0.j, 0.-1.j],
+                   [0.+1.j, 0.+0.j]])
+
+sigmaz = np.array([[1.+0.j,  0.+0.j],
+                   [0.+0.j, -1.+0.j]])
+
+dirac = [ sigmaz,sigmax*1j,sigmay*1j]
+
+representation2 = dirac
+
+representation1=[np.array([[1]])]*3
 
 
 
@@ -58,7 +67,7 @@ w_model = WilsonModel(  lattice = some_lattice,
                         mass=1,
                         representation=representation2,
                         flavours=1,
-                        spin=3,
+                        spin=1,
                         electric_field=(1,2,3),
                         e_value = 0.025,
                         q=1,
@@ -68,16 +77,15 @@ w_model = WilsonModel(  lattice = some_lattice,
 
 
 
+hopp = w_model.hopping_term()
+for f,s in zip(hopp.ops[FermionicOp],hopp.ops[SpinOp]):
+    print(f)
+    print(s)
+    print("#############")
 
-
-qubit_converter = QubitConverter(mappers = [JordanWignerMapper(),LogarithmicMapper()])
-# print(qubit_converter.convert(w_model.mass_term()))
-idntyspin =w_model._QLM_spin.idnty(2)
-idntyferm = w_model._fermionic_spinor.idnty()
-print(idntyspin)
-print(qubit_converter.convert(MixedOp(([idntyferm,idntyspin],1.0))))
-
-
+# op = representation2[0] @ (1.0j *representation2[1]+1*np.eye(2))
+# print(op)
+# print(w_model._fermionic_spinor.spinor_product(0,1,op))
 
 
 

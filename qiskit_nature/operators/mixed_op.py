@@ -8,8 +8,8 @@ from typing import cast
 from copy import copy
 import numpy as np
 
-class MixedOp(SecondQuantizedOp):
 
+class MixedOp(SecondQuantizedOp):
     def _assign_data(self, op):
         if isinstance(op, FermionicOp) or isinstance(op, SpinOp):
             if type(op) in self.ops:
@@ -21,9 +21,12 @@ class MixedOp(SecondQuantizedOp):
 
     def __init__(
         self,
-        data: SecondQuantizedOp | list[SecondQuantizedOp] |
-               tuple[SecondQuantizedOp | list[SecondQuantizedOp],
-                     float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]], complex]]
+        data: SecondQuantizedOp
+        | list[SecondQuantizedOp]
+        | tuple[
+            SecondQuantizedOp | list[SecondQuantizedOp],
+            float | complex | list[tuple[list[tuple[type(SecondQuantizedOp), int]], complex]],
+        ],
     ):
 
         # VibrationalOp is currently not supported
@@ -46,9 +49,11 @@ class MixedOp(SecondQuantizedOp):
             self._assign_data(op_list)
 
         if not isinstance(data[1], list):
-            self.coeffs = [([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
-                           for f_index in range(len(self.ops[FermionicOp]))
-                           for s_index in range(len(self.ops[SpinOp]))]
+            self.coeffs = [
+                ([(FermionicOp, f_index), (SpinOp, s_index)], coeff)
+                for f_index in range(len(self.ops[FermionicOp]))
+                for s_index in range(len(self.ops[SpinOp]))
+            ]
         else:
             self.coeffs = data[1]
 
@@ -92,22 +97,23 @@ class MixedOp(SecondQuantizedOp):
 
         if isinstance(other, FermionicOp):
             f_op_list.append(other)
-            new_ops = [(FermionicOp, len(f_op_list)-1)]
+            new_ops = [(FermionicOp, len(f_op_list) - 1)]
             new_coeffs = coeffs + [(new_ops, 1)]
 
         elif isinstance(other, SpinOp):
             s_op_list.append(other)
-            new_ops = [(SpinOp, len(s_op_list)-1)]
+            new_ops = [(SpinOp, len(s_op_list) - 1)]
             new_coeffs = coeffs + [(new_ops, 1)]
 
         else:
-            offset_map = {FermionicOp: len(f_op_list),
-                          SpinOp: len(s_op_list)}
+            offset_map = {FermionicOp: len(f_op_list), SpinOp: len(s_op_list)}
 
             f_op_list += other.ops[FermionicOp]
             s_op_list += other.ops[SpinOp]
 
-            new_coeffs = coeffs + [([(x[0], x[1] + offset_map[x[0]]) for x in c[0]], c[1]) for c in other.coeffs]
+            new_coeffs = coeffs + [
+                ([(x[0], x[1] + offset_map[x[0]]) for x in c[0]], c[1]) for c in other.coeffs
+            ]
 
         op_list = f_op_list + s_op_list
         return MixedOp((op_list, new_coeffs))
