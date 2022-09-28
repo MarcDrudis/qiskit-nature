@@ -1,6 +1,6 @@
 # This code is part of Qiskit.
 #
-# (C) Copyright IBM 2022.
+# (C) Copyright IBM 2021, 2022.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -11,27 +11,28 @@
 # that they have been altered from the originals.
 
 """
-Second-Quantization Operators (:mod:`qiskit_nature.second_q.operators`)
-=======================================================================
+Operators (:mod:`qiskit_nature.operators`)
+==========================================
 
-.. currentmodule:: qiskit_nature.second_q.operators
+.. currentmodule:: qiskit_nature.operators
 
-Operators and mappers for different systems such as fermionic, vibrational and spin.
+Operators for different systems such as fermionic, vibrational and spin.
 
 .. autosummary::
-   :toctree: ../stubs/
+   :toctree:
 
-   FermionicOp
-   SpinOp
-   SecondQuantizedOp
-   VibrationalOp
-   MixedOp
+   second_quantization
+
 """
 
-from .fermionic_op import FermionicOp
-from .second_quantized_op import SecondQuantizedOp
-from .spin_op import SpinOp
-from .vibrational_op import VibrationalOp
-from .mixed_op import MixedOp
+from ..deprecation import warn_deprecated, DeprecatedType, NatureDeprecationWarning
 
-__all__ = ["FermionicOp", "SecondQuantizedOp", "SpinOp", "VibrationalOp", "MixedOp"]
+warn_deprecated(
+    "0.5.0",
+    old_type=DeprecatedType.PACKAGE,
+    old_name="qiskit_nature.operators",
+    new_type=DeprecatedType.PACKAGE,
+    new_name="qiskit_nature.second_q.operators",
+    stack_level=3,
+    category=NatureDeprecationWarning,
+)

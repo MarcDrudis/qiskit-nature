@@ -1,6 +1,6 @@
 # This code is part of Qiskit.
 #
-# (C) Copyright IBM 2022.
+# (C) Copyright IBM 2021, 2022.
 #
 # This code is licensed under the Apache License, Version 2.0. You may
 # obtain a copy of this license in the LICENSE.txt file in the root directory
@@ -10,88 +10,27 @@
 # copyright notice, and modified files need to carry a notice indicating
 # that they have been altered from the originals.
 
-
 """
-Mappers (:mod:`qiskit_nature.second_q.mappers`)
-===============================================
+Operator to Qubit Mappers (:mod:`qiskit_nature.mappers`)
+========================================================
 
-.. currentmodule:: qiskit_nature.second_q.mappers
+.. currentmodule:: qiskit_nature.mappers
 
-The classes here are used to convert fermionic, vibrational and spin operators to qubit operators.
 
 .. autosummary::
-   :toctree: ../stubs/
-   :nosignatures:
+   :toctree:
 
-   QubitMapper
-
-FermionicOp Mappers
-+++++++++++++++++++
-
-.. autosummary::
-   :toctree: ../stubs/
-   :nosignatures:
-
-   FermionicMapper
-   BravyiKitaevMapper
-   BravyiKitaevSuperFastMapper
-   JordanWignerMapper
-   ParityMapper
-
-
-VibrationalOp Mappers
-+++++++++++++++++++++
-
-.. autosummary::
-   :toctree: ../stubs/
-   :nosignatures:
-
-   VibrationalMapper
-   DirectMapper
-
-
-SpinOp Mappers
-++++++++++++++
-
-.. autosummary::
-   :toctree: ../stubs/
-   :nosignatures:
-
-   SpinMapper
-   LinearMapper
-   LogarithmicMapper
-
-Qubit Converter
-+++++++++++++++
-
-.. autosummary::
-   :toctree: ../stubs/
-   :nosignatures:
-
-   QubitConverter
+   second_quantization
 """
 
-from .bksf import BravyiKitaevSuperFastMapper
-from .bravyi_kitaev_mapper import BravyiKitaevMapper
-from .jordan_wigner_mapper import JordanWignerMapper
-from .parity_mapper import ParityMapper
-from .linear_mapper import LinearMapper
-from .logarithmic_mapper import LogarithmicMapper
-from .direct_mapper import DirectMapper
-from .qubit_mapper import QubitMapper
-from .qubit_converter import QubitConverter
-from .fermionic_mapper import FermionicMapper
-from .spin_mapper import SpinMapper
-from .vibrational_mapper import VibrationalMapper
+from ..deprecation import warn_deprecated, DeprecatedType, NatureDeprecationWarning
 
-__all__ = [
-    "BravyiKitaevMapper",
-    "BravyiKitaevSuperFastMapper",
-    "DirectMapper",
-    "JordanWignerMapper",
-    "ParityMapper",
-    "LinearMapper",
-    "LogarithmicMapper",
-    "QubitConverter",
-    "QubitMapper",
-]
+warn_deprecated(
+    "0.5.0",
+    old_type=DeprecatedType.PACKAGE,
+    old_name="qiskit_nature.mappers",
+    new_type=DeprecatedType.PACKAGE,
+    new_name="qiskit_nature.second_q.mappers",
+    stack_level=3,
+    category=NatureDeprecationWarning,
+)
