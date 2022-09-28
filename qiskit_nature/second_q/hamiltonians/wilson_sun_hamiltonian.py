@@ -25,15 +25,17 @@ from qiskit_nature.second_q.hamiltonians.basic_operators import FermionicSpinor,
 class WilsonModel(LatticeModel):
     """The Wilson Model.
 
+
+
     Attributes:
-        lattice: Lattice on which the model is defined.
-        lattice_constant: Lattice Constant.
-        wilson_parameter: Wilson Parameter.
+        lattice (HyperCubicLattice): Lattice on which the model is defined.
+        lattice_constant (complex): Lattice Constant.
+        wilson_parameter (complex): Wilson Parameter.
         mass: Mass.
-        constraint_coefficient: Coefficient added in front of the regularization term in
+        constraint_coefficient (float): Coefficient added in front of the regularization term in
             the hamiltonian
-        representation: Matrix representation of the dirac operators for the spinnor product.
-        flavours: Number of flavours.
+        representation (list(np.array)): Matrix representation of the dirac operators for the spinnor product.
+        flavours (int): Number of flavours.
         fermionic_spinor (FermionicSpinor): Represents the fermionic part of the system.
         QLM_spin (QLM): Represents the bosonic part of the system.
 
@@ -194,12 +196,12 @@ class WilsonModel(LatticeModel):
         Args:
             display_format: We need to wait until MixedOps is finished
         """
-
-        mass_term = self.mass_term()
-        link_term = self.link_term()
-        hopping_term = self.hopping_term()
+        hamiltonian = self.mass_term()
+        hamiltonian += self.link_term()
+        hamiltonian += self.hopping_term()
         plaquette_term = self.plaquette_term()
-        if plaquette_term is None:
-            return hopping_term + mass_term + link_term
-        else:
-            return hopping_term + mass_term + link_term + plaquette_term
+
+        if plaquette_term is not None:
+            hamiltonian += plaquette_term
+        
+        return self.lattice_constant**self.dimension * hamiltonian
