@@ -1,0 +1,2211 @@
+diff --git a/qiskit_nature/mappers/bksf.py b/qiskit_nature/mappers/bksf.py
+new file mode 100644
+index 00000000..e9c3850d
+--- /dev/null
++++ b/qiskit_nature/mappers/bksf.py
+@@ -0,0 +1,612 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Bravyi-Kitaev Super-Fast (BKSF) Mapper."""
++
++from enum import Enum
++from typing import List, Tuple
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli, SparsePauliOp
++
++from qiskit_nature.second_q.operators import FermionicOp
++from .fermionic_mapper import FermionicMapper
++
++
++class BravyiKitaevSuperFastMapper(FermionicMapper):
++    """The Bravyi-Kitaev super-fast fermion-to-qubit mapping.
++
++    This implementation follows closely Reference [1].
++
++       References:
++           [1]: Bravyi-Kitaev Superfast simulation of electronic structure on a quantum computer
++                Kanav Setia and James D Whitfield
++                JCP Volume 148, Issue 16 - Published April 2018
++                arXiv:1712.00446
++    """
++
++    def __init__(self):
++        """The BKSF mapping."""
++        super().__init__(allows_two_qubit_reduction=False)
++
++    def map(self, second_q_op: FermionicOp) -> PauliSumOp:
++        if not isinstance(second_q_op, FermionicOp):
++            raise TypeError("Type ", type(second_q_op), " not supported.")
++
++        if second_q_op.display_format == "sparse":
++            second_q_op = FermionicOp(second_q_op._to_dense_label_data(), display_format="dense")
++
++        edge_list = _bksf_edge_list_fermionic_op(second_q_op)
++        sparse_pauli = _convert_operator(second_q_op, edge_list)
++
++        ## Simplify and sort the result
++        sparse_pauli = sparse_pauli.simplify()
++        indices = sparse_pauli.paulis.argsort()
++        table = sparse_pauli.paulis[indices]
++        coeffs = sparse_pauli.coeffs[indices]
++        sorted_sparse_pauli = SparsePauliOp(table, coeffs)
++
++        return PauliSumOp(sorted_sparse_pauli)
++
++
++class TermType(Enum):
++    """Denotes the type of interaction of a Fermionic operator."""
++
++    NUMBER = 1
++    EXCITATION = 2
++    DOUBLE_EXCITATION = 3
++    NUMBER_EXCITATION = 4
++    COULOMB_EXCHANGE = 5
++
++
++def _convert_operator(ferm_op: FermionicOp, edge_list: np.ndarray) -> SparsePauliOp:
++    """Convert a fermionic operator together with qubit-connectivity graph to a Pauli operator.
++
++    This is the heart of the implementation of BKSF mapping. The connectivity graph must be
++    computed before this method is called. The returned Pauli operator must be sorted and simplified.
++
++    Args:
++      ferm_op: The fermionic operator to convert.
++      edge_list: The qubit-connectivity graph expressed as an edge list.
++
++    Returns:
++      An un-simplified Pauli operator representing `ferm_op`.
++
++    Raises:
++      ValueError: if the type of interaction of any term is unknown.
++    """
++    sparse_pauli = None
++    for term in ferm_op.to_list():
++        if _operator_coefficient(term) == 0:
++            continue
++        term_type, facs = _analyze_term(_operator_string(term))
++        if facs[0][1] == "-":  # keep only one of h.c. pair
++            continue
++        ## Following only filters h.c. of some number-excitation op
++        if facs[0][0] == facs[1][0]:  # first op is number op, which is it's own h.c.
++            if len(facs) > 2 and facs[2][1] == "-":  # So, look at next op to skip h.c.
++                continue
++
++        if term_type == TermType.NUMBER:  # a^\dagger_p a_p
++            p = facs[0][0]  # pylint: disable=invalid-name
++            h1_pq = _operator_coefficient(term)
++            sparse_pauli = _add_sparse_pauli(sparse_pauli, _number_operator(edge_list, p, h1_pq))
++            continue
++
++        if term_type == TermType.EXCITATION:
++            (p, q) = [facs[i][0] for i in range(2)]  # p < q always   # pylint: disable=invalid-name
++            h1_pq = _operator_coefficient(term)
++            sparse_pauli = _add_sparse_pauli(
++                sparse_pauli, _excitation_operator(edge_list, p, q, h1_pq)
++            )
++
++        else:
++            facs_reordered, phase = _to_physicist_index_order(facs)
++            h2_pqrs = phase * _operator_coefficient(term)
++            (p, q, r, s) = [facs_reordered[i][0] for i in range(4)]  # pylint: disable=invalid-name
++            if term_type == TermType.DOUBLE_EXCITATION:
++                sparse_pauli = _add_sparse_pauli(
++                    sparse_pauli, _double_excitation(edge_list, p, q, r, s, h2_pqrs)
++                )
++            elif term_type == TermType.COULOMB_EXCHANGE:
++                sparse_pauli = _add_sparse_pauli(
++                    sparse_pauli, _coulomb_exchange(edge_list, p, q, s, h2_pqrs)
++                )
++            elif term_type == TermType.NUMBER_EXCITATION:
++                # Note that h2_pqrs is not divided by 2 here, as in the aqua code
++                sparse_pauli = _add_sparse_pauli(
++                    sparse_pauli, _number_excitation(edge_list, p, q, r, s, h2_pqrs)
++                )
++            else:
++                raise ValueError("Unknown interaction: ", term_type)
++
++    if sparse_pauli is None:
++        sparse_pauli = _pauli_id(edge_list.shape[1], complex(0.0))
++    return sparse_pauli
++
++
++def _add_sparse_pauli(qubit_op1: SparsePauliOp, qubit_op2: SparsePauliOp) -> SparsePauliOp:
++    """Return `qubit_op1` + `qubit_op2`, except when either one is `None`.
++
++    In the latter case, return the one that is not `None`. In other words, assume
++    `None` signifies the additive identity.
++
++    Args:
++      qubit_op1: The first operand
++      qubit_op2: The second operand
++    Returns:
++        sparse pauli op
++    """
++    if qubit_op1 is None:
++        return qubit_op2
++    elif qubit_op2 is None:
++        return qubit_op1
++    else:
++        return qubit_op1 + qubit_op2
++
++
++def _analyze_term(term_str: str) -> Tuple[TermType, List[Tuple[int, str]]]:
++    """Return the type of interaction represented by `term_str` and
++    a list of the factors and their indices in `term_str`.
++
++    Args:
++      term_str: a string of characters in `+-NI`.
++
++    Returns:
++      tuple: The first element is a `TermType` specifying the interaction type. See the method
++      `_interaction_type`. The second is a list of factors as returned by `_unpack_term`.
++    """
++    (n_number, n_raise, n_lower), facs = _unpack_term(term_str, expand_number_op=True)
++    _type = _interaction_type(n_number, n_raise, n_lower)
++    return _type, facs
++
++
++def _operator_string(term: Tuple) -> str:
++    """Return the string describing the operators in the term extracted from a `FermionicOp`.
++    given by `term`.
++    """
++    return term[0]
++
++
++def _operator_coefficient(term: Tuple) -> float:
++    """Return the coefficient of the multi-mode operator term extracted from a `FermionicOp`."""
++    return term[1]
++
++
++def _pauli_id(n_qubits: int, coeff=None) -> SparsePauliOp:
++    """Return the identity for `SparsePauliOp` on `n_qubits` qubits."""
++    if coeff is None:
++        coeff = complex(1.0)
++    return SparsePauliOp(
++        Pauli((np.zeros(n_qubits, dtype=bool), np.zeros(n_qubits, dtype=bool))), [coeff]
++    )
++
++
++def _number_operator(  # pylint: disable=invalid-name
++    edge_list: np.ndarray, p: int, h1_pq: float
++) -> SparsePauliOp:
++    """Map a number operator to a Pauli operator.
++
++    Args:
++      edge_list: representation of graph specifying neighboring qubits.
++      p: The Fermionic-mode index of number operator.
++      h1_pq: Numerical coefficient of the term
++
++    Returns:
++      The result of the Fermionic to Pauli operator mapping.
++    """
++    b_p = _edge_operator_bi(edge_list, p)
++    id_op = _pauli_id(edge_list.shape[1])
++    return (0.5 * h1_pq) * (id_op - b_p)  # SW2018 eq 33
++
++
++## SW2018 eq 34
++def _coulomb_exchange(  # pylint: disable=invalid-name
++    edge_list: np.ndarray, p: int, q: int, s: int, h2_pqrs: float
++) -> SparsePauliOp:
++    """Map a Coulomb-exchange operator to a Pauli operator.
++
++    Args:
++      edge_list: representation of graph specifying neighboring qubits.
++      p: First Fermionic-mode index
++      q: Second Fermionic-mode index
++      s: Index of last lowering operator in physicists' order
++      h2_pqrs: Numerical coefficient of the term
++
++    Returns:
++      The result of the Fermionic to Pauli operator mapping.
++    """
++    b_p = _edge_operator_bi(edge_list, p)
++    b_q = _edge_operator_bi(edge_list, q)
++    id_op = _pauli_id(edge_list.shape[1])
++    qubit_op = (id_op - b_p).dot((id_op - b_q))
++    if p == s:  # two commutations to order as two number operators.
++        final_coeff = 0.25
++    else:  # one commutation
++        final_coeff = -0.25
++    return (final_coeff * h2_pqrs) * qubit_op
++
++
++## SW2018 eq 35
++## Includes contributions from a h.c. pair
++def _excitation_operator(  # pylint: disable=invalid-name
++    edge_list: np.ndarray, p: int, q: int, h1_pq: float
++) -> SparsePauliOp:
++    """Map an excitation operator to a Pauli operator.
++
++    Args:
++      edge_list: representation of graph specifying neighboring qubits.
++      p: First Fermionic-mode index.
++      q: Second Fermionic-mode index. You must ensure that p < q.
++      h1_pq: Numerical coefficient of the term.
++
++    Returns:
++      The result of the Fermionic to Pauli operator mapping.
++    """  # pylint: disable=missing-raises-doc
++    if p >= q:
++        raise ValueError("Expected p < q, got p = ", p, ", q = ", q)
++    b_a = _edge_operator_bi(edge_list, p)
++    b_b = _edge_operator_bi(edge_list, q)
++    a_ab = _edge_operator_aij(edge_list, p, q)
++    return (-1j * 0.5 * h1_pq) * ((b_b & a_ab) + (a_ab & b_a))
++
++
++## SW2018 eq 37
++def _double_excitation(  # pylint: disable=invalid-name
++    edge_list: np.ndarray, p: int, q: int, r: int, s: int, h2_pqrs: float
++) -> SparsePauliOp:
++    """Map a double-excitation operator to a Pauli operator.
++
++    Args:
++      edge_list: representation of graph specifying neighboring qubits.
++      p: First Fermionic-mode index.
++      q: Second Fermionic-mode index. You must ensure that p < q.
++      r: Third Fermionic-mode index.
++      s: Fourth Fermionic-mode index.
++      h2_pqrs: Numerical coefficient of the term.
++
++    Returns:
++      The result of the Fermionic to Pauli operator mapping.
++    """
++    b_p = _edge_operator_bi(edge_list, p)
++    b_q = _edge_operator_bi(edge_list, q)
++    b_r = _edge_operator_bi(edge_list, r)
++    b_s = _edge_operator_bi(edge_list, s)
++    a_pq = _edge_operator_aij(edge_list, p, q)
++    a_rs = _edge_operator_aij(edge_list, r, s)
++    a_pq = -a_pq if q < p else a_pq
++    a_rs = -a_rs if s < r else a_rs
++
++    id_op = _pauli_id(edge_list.shape[1])
++    qubit_op = (a_pq.dot(a_rs)).dot(
++        (
++            -id_op
++            - b_p.dot(b_q)
++            + b_p.dot(b_r)
++            + b_p.dot(b_s)
++            + b_q.dot(b_r)
++            + b_q.dot(b_s)
++            - b_r.dot(b_s)
++            # Agrees with SW2018 eq 37 and OpenFermion. Aqua had `-`.
++            + b_p.dot(b_q.dot(b_r.dot(b_s)))
++        )
++    )
++    final_coeff = 0.125
++    return (final_coeff * h2_pqrs) * qubit_op
++
++
++def _number_excitation(  # pylint: disable=invalid-name
++    edge_list: np.ndarray, p: int, q: int, r: int, s: int, h2_pqrs: float
++) -> SparsePauliOp:
++    """Map a number-excitation operator to a Pauli operator.
++
++    Exactly two of the indices p, q, r, s must be equal, and this pair must consist
++    of either p or q and either r or s. Furthermore  You must ensure that p < q.
++    The equal indices represent the number operator, while the remaining two
++    represent the excitation operator.
++
++    Args:
++      edge_list: representation of graph specifying neighboring qubits.
++      p: First Fermionic-mode index.
++      q: Second Fermionic-mode index.
++      r: Third Fermionic-mode index.
++      s: Fourth Fermionic-mode index.
++      h2_pqrs: Numerical coefficient of the term.
++
++    Returns:
++      The result of the Fermionic to Pauli operator mapping.
++    """  # pylint: disable=missing-raises-doc
++    b_p = _edge_operator_bi(edge_list, p)
++    b_q = _edge_operator_bi(edge_list, q)
++    id_op = _pauli_id(edge_list.shape[1])
++    if p == r:
++        b_s = _edge_operator_bi(edge_list, s)
++        a_qs = _edge_operator_aij(edge_list, q, s)
++        a_qs = -a_qs if s < q else a_qs
++        qubit_op = (a_qs.dot(b_s) + b_q.dot(a_qs)).dot(id_op - b_p)
++        final_coeff = 1j * 0.25
++    elif p == s:
++        b_r = _edge_operator_bi(edge_list, r)
++        a_qr = _edge_operator_aij(edge_list, q, r)
++        a_qr = -a_qr if r < q else a_qr
++        qubit_op = (a_qr.dot(b_r) + b_q.dot(a_qr)).dot(id_op - b_p)
++        final_coeff = 1j * -0.25
++    elif q == r:
++        b_s = _edge_operator_bi(edge_list, s)
++        a_ps = _edge_operator_aij(edge_list, p, s)
++        a_ps = -a_ps if s < p else a_ps
++        qubit_op = (a_ps.dot(b_s) + b_p.dot(a_ps)).dot(id_op - b_q)
++        final_coeff = 1j * -0.25
++    elif q == s:
++        b_r = _edge_operator_bi(edge_list, r)
++        a_pr = _edge_operator_aij(edge_list, p, r)
++        a_pr = -a_pr if r < p else a_pr
++        qubit_op = (a_pr.dot(b_r) + b_p.dot(a_pr)).dot(id_op - b_q)
++        final_coeff = 1j * 0.25
++    else:
++        raise ValueError(f"unexpected sequence of indices: {p}, {q}, {r}, {s}")
++    return (final_coeff * h2_pqrs) * qubit_op
++
++
++def _unpack_term(
++    term_str: str, expand_number_op: bool = False
++) -> Tuple[Tuple[int, int, int], List[Tuple[int, str]]]:
++    """Return a tuple specifying the counts of kinds of operators in `term_str` and
++    a list of the factors and their indices in `term_str`.
++
++    The factors are represented by tuples of the form `(i, c)`, where `i` is an index
++    and `c` is a character.
++    Allowed characters in `term_str` are 'N+-I`.
++    The returned tuple contains counts for `N`, `+`, and `-`, in that order. Identity operators
++    are ignored.
++
++    Args:
++       term_str: a string of characters in `N+-I`.
++       expand_number_op: if `True`, number operators are expanded to `(i, '+')`, `(i, '-')`
++         in the returned list of factors.
++
++    Returns:
++      tuple: A tuple of two elements. First, a tuple of three integers giving the number of
++      number, raising, and lowering operators. Second a list of factors represented by
++      tuples of two elements: the first is an index and the second one of "-", "+", or "N".
++      If `expand_number_op` is `True`, then factors of `N` are expanded.
++    """  # pylint: disable=missing-raises-doc
++    (n_number, n_raise, n_lower) = (0, 0, 0)
++    facs = []
++    for i, c in enumerate(term_str):
++        if c == "I":
++            continue
++        if c == "+":
++            n_raise += 1
++            facs.append((i, "+"))
++        elif c == "-":
++            n_lower += 1
++            facs.append((i, "-"))
++        elif c == "N":
++            n_number += 1
++            if expand_number_op:
++                facs.append((i, "+"))
++                facs.append((i, "-"))
++            else:
++                facs.append((i, "N"))
++        else:
++            raise ValueError("Unsupported operator ", c, " in term.")
++
++    return (n_number, n_raise, n_lower), facs
++
++
++def _interaction_type(n_number: int, n_raise: int, n_lower: int) -> TermType:
++    """Return a `TermType` instance describing the type of interaction given the number of
++    number, raising, and lowering operators.
++
++    The number of number operators must be 1 or 2. The number of raising operators
++    must be equal to 0, 1 or 2, and the number of raising operators must be equal
++    to the number of lowering operators.
++
++    Args:
++      n_number: the number of number operators
++      n_raise: the number of raising operators
++      n_lower: the number of lowering operators
++
++    Returns:
++      TermType: The type of interaction.
++    """  # pylint: disable=missing-raises-doc
++    if n_raise == 0 and n_lower == 0:
++        if n_number == 1:
++            return TermType.NUMBER
++        elif n_number == 2:
++            return TermType.COULOMB_EXCHANGE
++        else:
++            raise ValueError("unexpected number of number operators: ", n_number)
++    elif n_raise == 1 and n_lower == 1:
++        if n_number == 1:
++            return TermType.NUMBER_EXCITATION
++        elif n_number == 0:
++            return TermType.EXCITATION
++        else:
++            raise ValueError("unexpected number of number operators: ", n_number)
++    elif n_raise == 2 and n_lower == 2:
++        return TermType.DOUBLE_EXCITATION
++    else:
++        raise ValueError(f"n_raise ({n_raise}) not equal to n_lower ({n_lower})")
++
++
++def _get_adjacency_matrix(fer_op: FermionicOp) -> np.ndarray:
++    """Return an adjacency matrix specifying the edges in the BKSF graph for the
++    operator `fer_op`.
++
++    The graph is undirected, so we choose to return the edges in the upper triangle.
++    (There are no self edges.) The lower triangle entries are all `False`.
++
++    Args:
++      fer_op: The Fermionic operator.
++
++    Returns:
++      numpy.ndarray(dtype=bool): edge_matrix the adjacency matrix.
++    """
++    n_modes = fer_op.register_length
++    edge_matrix = np.zeros((n_modes, n_modes), dtype=bool)
++    for term in fer_op.to_list():
++        if _operator_coefficient(term) != 0:
++            _add_edges_for_term(edge_matrix, _operator_string(term))
++    return edge_matrix
++
++
++def _add_one_edge(edge_matrix: np.ndarray, i: int, j: int) -> None:
++    """Add an edge in the adjacency matrix from lesser index to greater.
++
++    This maintains the upper triangular structure.
++
++    Args:
++      i: the first vertex index
++      j: the second vertex index. The values of `i` and `j` may be in any order,
++         but they must not be equal.
++    """  # pylint: disable=missing-raises-doc
++    if i == j:
++        raise ValueError("expecting i != j")
++    edge_matrix[min(i, j), max(i, j)] = True
++
++
++def _add_edges_for_term(edge_matrix: np.ndarray, term_str: str) -> None:
++    """Add one, two, or no edges to `edge_matrix` as dictated by the operator `term_str`.
++
++    Args:
++      edge_matrix: an adjacency matrix representing the connectivity graph.
++      term_str: A representation of the interaction satisfying the description in the method
++        `_unpack_term`. The number of explicit raising and lowering operators ('+' and '-')
++        must be equal.
++    """  # pylint: disable=missing-raises-doc
++    (n_number, n_raise, n_lower), facs = _unpack_term(term_str)
++    _type = _interaction_type(n_number, n_raise, n_lower)
++    # For EXCITATION and NUMBER_EXCITATION, create an edge between the `+` and `-`.
++    if _type in (TermType.EXCITATION, TermType.NUMBER_EXCITATION):
++        inds = [i for (i, c) in facs if c in "+-"]
++        if len(inds) != 2:
++            raise ValueError("wrong number or raising and lowering: ", len(inds))
++        _add_one_edge(edge_matrix, *inds)
++    # For `double_excitation` create an edge between the two `+`s and an edge between the two `-`s.
++    elif _type == TermType.DOUBLE_EXCITATION:
++        raise_inds = [i for (i, c) in facs if c == "+"]
++        lower_inds = [i for (i, c) in facs if c == "-"]
++        _add_one_edge(edge_matrix, *raise_inds)
++        _add_one_edge(edge_matrix, *lower_inds)
++
++
++def _bksf_edge_list_fermionic_op(ferm_op: FermionicOp) -> np.ndarray:
++    """Construct edge list required for the BKSF algorithm.
++
++    Args:
++        ferm_op: the fermionic operator in the second quantized form
++
++    Returns:
++        numpy.ndarray: edge_list, a 2xE matrix, where E is total number of edges.
++                       The `i`th edge is given by `(edge_list[0, i], edge_list[1, i])`,
++                       where the index `i` starts at zero.
++
++    """
++    edge_matrix = _get_adjacency_matrix(ferm_op)
++    edge_list_as_2d_array = np.asarray(np.nonzero(edge_matrix))
++    return edge_list_as_2d_array
++
++
++def _edge_operator_aij(edge_list: np.ndarray, i: int, j: int) -> SparsePauliOp:
++    """Return the edge operator A_ij.
++
++    The definitions used here are consistent with arXiv:quant-ph/0003137
++
++    Args:
++        edge_list: a 2xE matrix, where E is total number of edges
++                                    and each pair denotes (from, to)
++        i: specifying the edge operator A
++        j: specifying the edge operator A
++    Returns:
++        sparse pauli op
++    """
++    v = np.zeros(edge_list.shape[1])
++    w = np.zeros(edge_list.shape[1])
++
++    position_ij = -1
++
++    for edge_index in range(edge_list.shape[1]):
++        if set((i, j)) == set(edge_list[:, edge_index]):
++            position_ij = edge_index
++            break
++
++    w[position_ij] = 1
++
++    def _set_edges(index1, index2):
++        qubit_position = np.asarray(np.where(edge_list == index1))
++        for edge_index in range(qubit_position.shape[1]):
++            i_i, j_j = qubit_position[:, edge_index]
++            i_i = int(not i_i)
++            if edge_list[i_i][j_j] < index2:
++                v[j_j] = 1
++
++    _set_edges(i, j)
++    _set_edges(j, i)
++
++    qubit_op = Pauli((v, w))
++    return SparsePauliOp(qubit_op)
++
++
++def _edge_operator_bi(edge_list: np.ndarray, i: int) -> SparsePauliOp:
++    """Return the edge operator B_i.
++
++    The definitions used here are consistent with arXiv:quant-ph/0003137
++
++    Args:
++        edge_list: a 2xE matrix, where E is total number of edges
++                                    and each pair denotes (from, to)
++        i: index for specifying the edge operator B.
++    Returns:
++        sparse pauli op
++    """
++    qubit_position_matrix = np.asarray(np.where(edge_list == i))
++    qubit_position = qubit_position_matrix[1]
++    v = np.zeros(edge_list.shape[1])
++    w = np.copy(v)
++    v[qubit_position] = 1
++    qubit_op = Pauli((v, w))
++    return SparsePauliOp(qubit_op)
++
++
++def _to_physicist_index_order(facs: List[Tuple[int, str]]) -> Tuple[List[Tuple[int, str]], int]:
++    """Reorder the factors `facs` to be two raising operators followed by two lowering operators and
++    return the new factors and the phase incurred by the reordering. Note that `facs` are not in
++    chemists' order, but rather sorted by index with least index first.
++
++    Args:
++      facs: a list of factors where each element is `(i, c)` where `i` is an integer index and
++        `c` is either `-` or `+`.
++
++    Returns:
++      facs_out: A copy of the reordered factors or the input list (not a copy) if the factors are
++          already in the desired order.
++      phase: Either `1` or `-1`.
++
++    Raises:
++      ValueError: if `facs` does not represent a two-body interaction.
++    """
++    ops = [fac[1] for fac in facs]
++    if ops == ["+", "+", "-", "-"]:
++        facs_out = facs
++        phase = 1
++    elif ops == ["+", "-", "+", "-"]:
++        facs_out = [facs[0], facs[2], facs[1], facs[3]]
++        phase = -1
++    elif ops == ["+", "-", "-", "+"]:
++        facs_out = [facs[0], facs[3], facs[1], facs[2]]
++        phase = 1
++    else:
++        raise ValueError("unexpected sequence of operators", facs)
++    return facs_out, phase
+diff --git a/qiskit_nature/mappers/bravyi_kitaev_mapper.py b/qiskit_nature/mappers/bravyi_kitaev_mapper.py
+new file mode 100644
+index 00000000..5f0159c8
+--- /dev/null
++++ b/qiskit_nature/mappers/bravyi_kitaev_mapper.py
+@@ -0,0 +1,161 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Bravyi-Kitaev Mapper."""
++
++import numpy as np
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli
++
++from qiskit_nature.second_q.operators import FermionicOp
++from .fermionic_mapper import FermionicMapper
++from .qubit_mapper import QubitMapper
++
++
++class BravyiKitaevMapper(FermionicMapper):  # pylint: disable=missing-class-docstring
++    def __init__(self):
++        """The Bravyi-Kitaev fermion-to-qubit mapping."""
++        super().__init__(allows_two_qubit_reduction=False)
++
++    def map(self, second_q_op: FermionicOp) -> PauliSumOp:
++
++        # number of modes/sites for the BK transform (= number of fermionic modes)
++        nmodes = second_q_op.register_length
++
++        def parity_set(j, n):
++            """
++            Computes the parity set of the j-th orbital in n modes.
++
++            Args:
++                j (int) : the orbital index
++                n (int) : the total number of modes
++
++            Returns:
++                numpy.ndarray: Array of mode indices
++            """
++            indices = np.array([])
++            if n % 2 != 0:
++                return indices
++
++            if j < n / 2:
++                indices = np.append(indices, parity_set(j, n / 2))
++            else:
++                indices = np.append(
++                    indices, np.append(parity_set(j - n / 2, n / 2) + n / 2, n / 2 - 1)
++                )
++            return indices
++
++        def update_set(j, n):
++            """
++            Computes the update set of the j-th orbital in n modes.
++
++            Args:
++                j (int) : the orbital index
++                n (int) : the total number of modes
++
++            Returns:
++                numpy.ndarray: Array of mode indices
++            """
++            indices = np.array([])
++            if n % 2 != 0:
++                return indices
++            if j < n / 2:
++                indices = np.append(indices, np.append(n - 1, update_set(j, n / 2)))
++            else:
++                indices = np.append(indices, update_set(j - n / 2, n / 2) + n / 2)
++            return indices
++
++        def flip_set(j, n):
++            """
++            Computes the flip set of the j-th orbital in n modes.
++
++            Args:
++                j (int) : the orbital index
++                n (int) : the total number of modes
++
++            Returns:
++                numpy.ndarray: Array of mode indices
++            """
++            indices = np.array([])
++            if n % 2 != 0:
++                return indices
++            if j < n / 2:
++                indices = np.append(indices, flip_set(j, n / 2))
++            elif n / 2 <= j < n - 1:
++                indices = np.append(indices, flip_set(j - n / 2, n / 2) + n / 2)
++            else:
++                indices = np.append(
++                    np.append(indices, flip_set(j - n / 2, n / 2) + n / 2), n / 2 - 1
++                )
++            return indices
++
++        pauli_table = []
++        # FIND BINARY SUPERSET SIZE
++        bin_sup = 1
++        while nmodes > np.power(2, bin_sup):
++            bin_sup += 1
++        # DEFINE INDEX SETS FOR EVERY FERMIONIC MODE
++        update_sets = []
++        update_pauli = []
++
++        parity_sets = []
++        parity_pauli = []
++
++        flip_sets = []
++
++        remainder_sets = []
++        remainder_pauli = []
++        for j in range(nmodes):
++
++            update_sets.append(update_set(j, np.power(2, bin_sup)))
++            update_sets[j] = update_sets[j][update_sets[j] < nmodes]
++
++            parity_sets.append(parity_set(j, np.power(2, bin_sup)))
++            parity_sets[j] = parity_sets[j][parity_sets[j] < nmodes]
++
++            flip_sets.append(flip_set(j, np.power(2, bin_sup)))
++            flip_sets[j] = flip_sets[j][flip_sets[j] < nmodes]
++
++            remainder_sets.append(np.setdiff1d(parity_sets[j], flip_sets[j]))
++
++            update_pauli.append(Pauli((np.zeros(nmodes, dtype=bool), np.zeros(nmodes, dtype=bool))))
++            parity_pauli.append(Pauli((np.zeros(nmodes, dtype=bool), np.zeros(nmodes, dtype=bool))))
++            remainder_pauli.append(
++                Pauli((np.zeros(nmodes, dtype=bool), np.zeros(nmodes, dtype=bool)))
++            )
++            for k in range(nmodes):
++                if np.in1d(k, update_sets[j]):
++                    update_pauli[j].x[k] = True
++                if np.in1d(k, parity_sets[j]):
++                    parity_pauli[j].z[k] = True
++                if np.in1d(k, remainder_sets[j]):
++                    remainder_pauli[j].z[k] = True
++
++            x_j = Pauli((np.zeros(nmodes, dtype=bool), np.zeros(nmodes, dtype=bool)))
++            x_j.x[j] = True
++            y_j = Pauli((np.zeros(nmodes, dtype=bool), np.zeros(nmodes, dtype=bool)))
++            y_j.z[j] = True
++            y_j.x[j] = True
++            pauli_table.append(
++                (
++                    parity_pauli[j] & x_j & update_pauli[j],
++                    remainder_pauli[j] & y_j & update_pauli[j],
++                )
++            )
++
++        # PauliList has the phase information.
++        # Here, phase is unnecessary, so the following removes phase.
++        for pauli1, pauli2 in pauli_table:
++            pauli1.phase = 0
++            pauli2.phase = 0
++
++        return QubitMapper.mode_based_mapping(second_q_op, pauli_table)
+diff --git a/qiskit_nature/mappers/direct_mapper.py b/qiskit_nature/mappers/direct_mapper.py
+new file mode 100644
+index 00000000..a08bdae6
+--- /dev/null
++++ b/qiskit_nature/mappers/direct_mapper.py
+@@ -0,0 +1,46 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Direct Mapper."""
++
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli
++
++from qiskit_nature.second_q.operators import VibrationalOp
++from .vibrational_mapper import VibrationalMapper
++from .qubit_mapper import QubitMapper
++
++
++class DirectMapper(VibrationalMapper):  # pylint: disable=missing-class-docstring
++    def __init__(self):
++        """The Direct mapper.
++
++        This mapper maps a :class:`~.VibrationalOp` to a :class:`PauliSumOp`.
++        In doing so, each modal of the the `VibrationalOp` gets mapped to a single qubit.
++        """
++        super().__init__(allows_two_qubit_reduction=False)
++
++    def map(self, second_q_op: VibrationalOp) -> PauliSumOp:
++
++        nmodes = sum(second_q_op.num_modals)
++
++        pauli_table = []
++        for i in range(nmodes):
++            a_z = np.asarray([0] * i + [0] + [0] * (nmodes - i - 1), dtype=bool)
++            a_x = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            b_z = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            b_x = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            pauli_table.append((Pauli((a_z, a_x)), Pauli((b_z, b_x))))
++
++        return QubitMapper.mode_based_mapping(second_q_op, pauli_table)
+diff --git a/qiskit_nature/mappers/fermionic_mapper.py b/qiskit_nature/mappers/fermionic_mapper.py
+new file mode 100644
+index 00000000..dfe7eafc
+--- /dev/null
++++ b/qiskit_nature/mappers/fermionic_mapper.py
+@@ -0,0 +1,37 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""Fermionic Mapper."""
++
++from abc import abstractmethod
++
++from qiskit.opflow import PauliSumOp
++from qiskit_nature.second_q.operators import FermionicOp
++
++from .qubit_mapper import QubitMapper
++
++
++class FermionicMapper(QubitMapper):
++    """Mapper of Fermionic Operator to Qubit Operator"""
++
++    @abstractmethod
++    def map(self, second_q_op: FermionicOp) -> PauliSumOp:
++        """Maps a :class:`~qiskit_nature.second_q.operators.FermionicOp`
++        to a `PauliSumOp`.
++
++        Args:
++            second_q_op: the `FermionicOp` to be mapped.
++
++        Returns:
++            The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.
++        """
++        raise NotImplementedError()
+diff --git a/qiskit_nature/mappers/jordan_wigner_mapper.py b/qiskit_nature/mappers/jordan_wigner_mapper.py
+new file mode 100644
+index 00000000..e96465f2
+--- /dev/null
++++ b/qiskit_nature/mappers/jordan_wigner_mapper.py
+@@ -0,0 +1,46 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Jordan-Wigner Mapper. """
++
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli
++
++from qiskit_nature.second_q.operators import FermionicOp
++from .fermionic_mapper import FermionicMapper
++from .qubit_mapper import QubitMapper
++
++
++class JordanWignerMapper(FermionicMapper):  # pylint: disable=missing-class-docstring
++    def __init__(self):
++        """The Jordan-Wigner fermion-to-qubit mapping."""
++        super().__init__(allows_two_qubit_reduction=False)
++
++    def map(self, second_q_op: FermionicOp) -> PauliSumOp:
++
++        # number of modes/sites for the Jordan-Wigner transform (= number of fermionic modes)
++        nmodes = second_q_op.register_length
++
++        pauli_table = []
++        for i in range(nmodes):
++            a_z = np.asarray([1] * i + [0] + [0] * (nmodes - i - 1), dtype=bool)
++            a_x = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            b_z = np.asarray([1] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            b_x = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            # c_z = np.asarray([0] * i + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            # c_x = np.asarray([0] * nmodes, dtype=bool)
++            pauli_table.append((Pauli((a_z, a_x)), Pauli((b_z, b_x))))
++            # TODO add Pauli 3-tuple to lookup table
++
++        return QubitMapper.mode_based_mapping(second_q_op, pauli_table)
+diff --git a/qiskit_nature/mappers/linear_mapper.py b/qiskit_nature/mappers/linear_mapper.py
+new file mode 100644
+index 00000000..5c1eec15
+--- /dev/null
++++ b/qiskit_nature/mappers/linear_mapper.py
+@@ -0,0 +1,144 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Linear Mapper."""
++
++import operator
++
++from fractions import Fraction
++from functools import reduce
++from typing import List, Union
++
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli, SparsePauliOp
++
++from qiskit_nature.second_q.operators import SpinOp
++from .spin_mapper import SpinMapper
++
++
++class LinearMapper(SpinMapper):  # pylint: disable=missing-class-docstring
++    def __init__(self):
++        """The Linear spin-to-qubit mapping."""
++        super().__init__(allows_two_qubit_reduction=False)
++
++    def map(self, second_q_op: SpinOp) -> PauliSumOp:
++
++        qubit_ops_list: List[PauliSumOp] = []
++
++        # get linear encoding of the general spin matrices
++        spinx, spiny, spinz, identity = self._linear_encoding(second_q_op.spin)
++
++        for idx, (_, coeff) in enumerate(second_q_op.to_list()):
++
++            operatorlist: List[PauliSumOp] = []
++
++            for n_x, n_y, n_z in zip(second_q_op.x[idx], second_q_op.y[idx], second_q_op.z[idx]):
++
++                operator_on_spin_i: List[PauliSumOp] = []
++
++                if n_x > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spinx] * int(n_x)))
++
++                if n_y > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spiny] * int(n_y)))
++
++                if n_z > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spinz] * int(n_z)))
++
++                if np.any([n_x, n_y, n_z]) > 0:
++                    single_operator_on_spin_i = reduce(operator.matmul, operator_on_spin_i)
++                    operatorlist.append(single_operator_on_spin_i.reduce())
++
++                else:
++                    # If n_x=n_y=n_z=0, simply add the embedded Identity operator.
++                    operatorlist.append(identity)
++
++            # Now, we can tensor all operators in this list
++            # NOTE: in Qiskit's opflow the `XOR` (i.e. `^`) operator does the tensor product
++            qubit_ops_list.append(coeff * reduce(operator.xor, reversed(operatorlist)))
++
++        qubit_op = reduce(operator.add, qubit_ops_list)
++
++        return qubit_op
++
++    def _linear_encoding(self, spin: Union[Fraction, float]) -> List[PauliSumOp]:
++        """
++        Generates a 'linear_encoding' of the spin S operators 'X', 'Y', 'Z' and 'identity'
++        to qubit operators (linear combinations of pauli strings).
++        In this 'linear_encoding' each individual spin S system is represented via
++        2S+1 qubits and the state |s> is mapped to the state |00...010..00>, where the s-th qubit is
++        in state 1.
++
++        Returns:
++            The 4-element list of transformed spin S 'X', 'Y', 'Z' and 'identity' operators.
++            I.e. spin_op_encoding[0]` corresponds to the linear combination of pauli strings needed
++            to represent the embedded 'X' operator
++        """
++
++        spin_op_encoding: List[PauliSumOp] = []
++        dspin = int(2 * spin + 1)
++        nqubits = dspin
++
++        # quick functions to generate a pauli with X / Y / Z at location `i`
++        pauli_id = Pauli("I" * nqubits)
++
++        def pauli_x(i):
++            return Pauli("I" * i + "X" + "I" * (nqubits - i - 1))
++
++        def pauli_y(i):
++            return Pauli("I" * i + "Y" + "I" * (nqubits - i - 1))
++
++        def pauli_z(i):
++            return Pauli("I" * i + "Z" + "I" * (nqubits - i - 1))
++
++        # 1. build the non-diagonal X operator
++        x_summands = []
++        for i, coeff in enumerate(np.diag(SpinOp("X", spin=spin).to_matrix(), 1)):
++            x_summands.append(
++                PauliSumOp(
++                    coeff / 2.0 * SparsePauliOp(pauli_x(i).dot(pauli_x(i + 1)))
++                    + coeff / 2.0 * SparsePauliOp(pauli_y(i).dot(pauli_y(i + 1)))
++                )
++            )
++        spin_op_encoding.append(reduce(operator.add, x_summands))
++
++        # 2. build the non-diagonal Y operator
++        y_summands = []
++        for i, coeff in enumerate(np.diag(SpinOp("Y", spin=spin).to_matrix(), 1)):
++            y_summands.append(
++                PauliSumOp(
++                    -1j * coeff / 2.0 * SparsePauliOp(pauli_x(i).dot(pauli_y(i + 1)))
++                    + 1j * coeff / 2.0 * SparsePauliOp(pauli_y(i).dot(pauli_x(i + 1)))
++                )
++            )
++        spin_op_encoding.append(reduce(operator.add, y_summands))
++
++        # 3. build the diagonal Z
++        z_summands = []
++        for i, coeff in enumerate(np.diag(SpinOp("Z", spin=spin).to_matrix())):
++            # get the first upper diagonal of coeff.
++            z_summands.append(
++                PauliSumOp(
++                    coeff / 2.0 * SparsePauliOp(pauli_z(i)) + coeff / 2.0 * SparsePauliOp(pauli_id)
++                )
++            )
++
++        z_operator = reduce(operator.add, z_summands)
++        spin_op_encoding.append(z_operator)
++
++        # 4. add the identity operator
++        spin_op_encoding.append(PauliSumOp(1.0 * SparsePauliOp(pauli_id)))
++
++        # return the lookup table for the transformed XYZI operators
++        return spin_op_encoding
+diff --git a/qiskit_nature/mappers/logarithmic_mapper.py b/qiskit_nature/mappers/logarithmic_mapper.py
+new file mode 100644
+index 00000000..aa46238c
+--- /dev/null
++++ b/qiskit_nature/mappers/logarithmic_mapper.py
+@@ -0,0 +1,224 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Logarithmic Mapper."""
++
++import operator
++
++from fractions import Fraction
++from functools import reduce
++from typing import List, Union, Tuple
++
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import SparsePauliOp, Operator
++
++from qiskit_nature.second_q.operators import SpinOp
++from .spin_mapper import SpinMapper
++
++
++class LogarithmicMapper(SpinMapper):
++    r"""A mapper for Logarithmic spin-to-qubit mapping.
++    In this local encoding transformation, each individual spin S system is represented via
++    the lowest lying :math:`2S+1` states in a qubit system with the minimal number of qubits needed to
++    represent :math:`>= 2S+1` distinct states [1].
++
++    References:
++        [1]: S. V. Mathis, G. Mazzola and I. Tavernelli.
++            Toward scalable simulations of lattice gauge theories on quantum computers.
++            Phys. Rev. D, 102 (9), 094501 (2020).
++            https://doi.org/10.1103/PhysRevD.102.094501
++    """
++
++    def __init__(self, padding: float = 1, embed_upper: bool = True) -> None:
++        r"""
++        Args:
++            padding:
++                When embedding a matrix into the upper/lower diagonal block of a
++                :math:`2^n` by :math:`2^n` matrix ,where :math:`n` is the number of qubits, pads
++                the diagonal of the block matrix with the value of `padding`.
++
++            embed_upper:
++                This parameter sets whether the given matrix is embedded in the upper left hand
++                corner or the lower right hand corner of the larger matrix.
++                I.e. using `embed_upper` = `True` returns the matrix:
++
++                .. math::
++                    \begin{pmatrix}
++                        \text{matrix} & 0 \\
++                        0 & \text{padding} * I
++                    \end{pmatrix}
++
++                Using `embed_upper` = `False` returns the matrix:
++
++                .. math::
++                    \begin{pmatrix}
++                        \text{padding} * I & 0 \\
++                        0 & \text{matrix}
++                    \end{pmatrix}
++
++        """
++        super().__init__(allows_two_qubit_reduction=False)
++        self._padding = padding
++        self._embed_upper = embed_upper
++
++    def map(self, second_q_op: SpinOp) -> PauliSumOp:
++        """Map spins to qubits using the Logarithmic encoding.
++
++        Args:
++            second_q_op: Spins mapped to qubits.
++
++        Returns:
++            Qubit operators generated by the Logarithmic encoding
++        """
++        qubit_ops_list: List[PauliSumOp] = []
++
++        # get logarithmic encoding of the general spin matrices.
++        spinx, spiny, spinz, identity = self._logarithmic_encoding(second_q_op.spin)
++        for idx, (_, coeff) in enumerate(second_q_op.to_list()):
++
++            operatorlist: List[PauliSumOp] = []
++
++            for n_x, n_y, n_z in zip(second_q_op.x[idx], second_q_op.y[idx], second_q_op.z[idx]):
++
++                operator_on_spin_i: List[PauliSumOp] = []
++
++                if n_x > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spinx] * int(n_x)))
++
++                if n_y > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spiny] * int(n_y)))
++
++                if n_z > 0:
++                    operator_on_spin_i.append(reduce(operator.matmul, [spinz] * int(n_z)))
++
++                if operator_on_spin_i:
++                    single_operator_on_spin_i = reduce(operator.matmul, operator_on_spin_i)
++                    operatorlist.append(single_operator_on_spin_i)
++
++                else:
++                    # If n_x=n_y=n_z=0, simply add the embedded Identity operator.
++                    operatorlist.append(identity)
++
++            # Now, we can tensor all operators in this list
++            qubit_ops_list.append(coeff * reduce(operator.xor, reversed(operatorlist)))
++
++        qubit_op = reduce(operator.add, qubit_ops_list)
++
++        return qubit_op
++
++    def _logarithmic_encoding(
++        self, spin: Union[Fraction, int]
++    ) -> Tuple[PauliSumOp, PauliSumOp, PauliSumOp, PauliSumOp]:
++        """The logarithmic encoding.
++
++        Args:
++            spin: Positive half-integer (integer or half-odd-integer) that represents spin.
++
++        Returns:
++            A tuple containing four PauliSumOp.
++        """
++        spin_op_encoding: List[PauliSumOp] = []
++        dspin = int(2 * spin + 1)
++        num_qubits = int(np.ceil(np.log2(dspin)))
++
++        # Get the spin matrices
++        spin_matrices = [SpinOp(symbol, spin=spin).to_matrix() for symbol in "XYZ"]
++        # Append the identity
++        spin_matrices.append(np.eye(dspin))
++
++        # Embed the spin matrices in a larger matrix of size 2**num_qubits x 2**num_qubits
++        embedded_spin_matrices = [
++            self._embed_matrix(matrix, num_qubits) for matrix in spin_matrices
++        ]
++
++        # Generate operators from these embedded spin matrices
++        embedded_operators = [Operator(matrix) for matrix in embedded_spin_matrices]
++        for op in embedded_operators:
++            op = SparsePauliOp.from_operator(op)
++            op.chop()
++            spin_op_encoding.append(PauliSumOp(1.0 * op))
++
++        return tuple(spin_op_encoding)  # type: ignore
++
++    def _embed_matrix(
++        self,
++        matrix: np.ndarray,
++        num_qubits: int,
++    ) -> np.ndarray:
++        r"""
++        Embeds `matrix` into the upper/lower diagonal block of a :math:`2^\text{num_qubits}`
++        by :math:`2^\text{num_qubits}` matrix and pads the diagonal of the upper left block matrix
++        with the value of `padding`. Whether the upper/lower diagonal block is used depends on
++        `embed_upper`. I.e. using `embed_upper` = `True` returns the matrix:
++
++        .. math::
++            \begin{pmatrix}
++                \text{matrix} & 0 \\
++                0 & \text{padding} * I
++            \end{pmatrix}
++
++        Using `embed_upper` = `False` returns the matrix:
++
++        .. math::
++            \begin{pmatrix}
++                \text{padding} * I & 0 \\
++                0 & \text{matrix}
++            \end{pmatrix}
++
++        Args:
++            matrix: The matrix (2D-array) to embed.
++            num_qubits: The number of qubits on which the embedded matrix should act on.
++
++        Returns:
++            If `matrix` is of size :math: `2^\text{num_qubits}`, returns `matrix`.
++            Else it returns the block matrix (:math: `I` = identity)
++
++        Raises:
++            ValueError: If the passed matrix does not fit into the space spanned by num_qubits.
++        """
++        full_dim = 1 << num_qubits
++        subs_dim = matrix.shape[0]
++
++        dim_diff = full_dim - subs_dim
++        if dim_diff == 0:
++            full_matrix = matrix
++
++        elif dim_diff > 0:
++            if self._embed_upper:
++                full_matrix = np.block(
++                    [
++                        [matrix, np.zeros((subs_dim, dim_diff), dtype=complex)],
++                        [
++                            np.zeros((dim_diff, subs_dim), dtype=complex),
++                            np.eye(dim_diff) * self._padding,
++                        ],
++                    ]
++                )
++            else:
++                full_matrix = np.block(
++                    [
++                        [
++                            np.eye(dim_diff) * self._padding,
++                            np.zeros((dim_diff, subs_dim), dtype=complex),
++                        ],
++                        [np.zeros((subs_dim, dim_diff), dtype=complex), matrix],
++                    ]
++                )
++
++        else:
++            raise ValueError(
++                f"The given matrix does not fit into the space spanned by {num_qubits} qubits."
++            )
++
++        return full_matrix
+diff --git a/qiskit_nature/mappers/parity_mapper.py b/qiskit_nature/mappers/parity_mapper.py
+new file mode 100644
+index 00000000..cf8c036b
+--- /dev/null
++++ b/qiskit_nature/mappers/parity_mapper.py
+@@ -0,0 +1,53 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""The Parity Mapper."""
++
++from typing import Union, List
++import numpy as np
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli
++
++from qiskit_nature.second_q.operators import FermionicOp
++from .fermionic_mapper import FermionicMapper
++from .qubit_mapper import QubitMapper
++
++
++class ParityMapper(FermionicMapper):  # pylint: disable=missing-class-docstring
++    def __init__(self):
++        """The Parity fermion-to-qubit mapping.
++
++        When using this mapper `two_qubit_reduction` can optionally be used for the qubit
++        operator that is created, see converter class
++        :class:`~qiskit_nature.second_q.operators.QubitConverter`.
++        """
++        super().__init__(allows_two_qubit_reduction=True)
++
++    def map(self, second_q_op: FermionicOp) -> PauliSumOp:
++
++        # number of modes/sites for the Parity transform (= number of fermionic modes)
++        nmodes = second_q_op.register_length
++
++        pauli_table = []
++        for i in range(nmodes):
++            a_z: Union[List[int], np.ndarray] = [0] * (i - 1) + [1] if i > 0 else []
++            a_x: Union[List[int], np.ndarray] = [0] * (i - 1) + [0] if i > 0 else []
++            b_z: Union[List[int], np.ndarray] = [0] * (i - 1) + [0] if i > 0 else []
++            b_x: Union[List[int], np.ndarray] = [0] * (i - 1) + [0] if i > 0 else []
++            a_z = np.asarray(a_z + [0] + [0] * (nmodes - i - 1), dtype=bool)
++            a_x = np.asarray(a_x + [1] + [1] * (nmodes - i - 1), dtype=bool)
++            b_z = np.asarray(b_z + [1] + [0] * (nmodes - i - 1), dtype=bool)
++            b_x = np.asarray(b_x + [1] + [1] * (nmodes - i - 1), dtype=bool)
++            pauli_table.append((Pauli((a_z, a_x)), Pauli((b_z, b_x))))
++
++        return QubitMapper.mode_based_mapping(second_q_op, pauli_table)
+diff --git a/qiskit_nature/mappers/qubit_converter.py b/qiskit_nature/mappers/qubit_converter.py
+new file mode 100644
+index 00000000..eb2af6dc
+--- /dev/null
++++ b/qiskit_nature/mappers/qubit_converter.py
+@@ -0,0 +1,594 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""A converter from Second-Quantized to Qubit Operators."""
++
++from __future__ import annotations
++
++import copy
++import logging
++from typing import (
++    cast,
++    Callable,
++    Dict,
++    Generator,
++    Generic,
++    Iterable,
++    List,
++    Optional,
++    Tuple,
++    TypeVar,
++    Union,
++    Sequence,
++)
++
++import numpy as np
++
++from qiskit.algorithms.minimum_eigen_solvers.minimum_eigen_solver import (
++    ListOrDict as ListOrDictType,
++)
++from qiskit.opflow import PauliSumOp, I
++from qiskit.opflow.converters import TwoQubitReduction
++from qiskit.opflow.primitive_ops import Z2Symmetries
++
++from qiskit_nature import QiskitNatureError
++
++from qiskit_nature.second_q.operators import SecondQuantizedOp, FermionicOp, SpinOp
++from qiskit_nature.second_q.operators.mixed_op import MixedOp
++from .qubit_mapper import QubitMapper
++from .fermionic_mapper import FermionicMapper
++from .spin_mapper import SpinMapper
++
++# pylint: disable=invalid-name
++T = TypeVar("T")
++
++logger = logging.getLogger(__name__)
++
++
++class _ListOrDict(Dict, Iterable, Generic[T]):
++    """The ListOrDict utility class.
++
++    This is a utility which allows seamless iteration of a `list` or `dict` object.
++    """
++
++    def __init__(self, values: Optional[ListOrDictType] = None):
++        """
++        Args:
++            values: an optional object of `list` or `dict` type.
++        """
++        if isinstance(values, list):
++            values = dict(enumerate(values))
++        elif values is None:
++            values = {}
++        super().__init__(values)
++
++    def __iter__(self) -> Generator[Tuple[Union[int, str], T], T, None]:
++        """Return the generator-iterator method."""
++        return self._generator()
++
++    def _generator(self) -> Generator[Tuple[Union[int, str], T], T, None]:
++        """Return generator method iterating the contents of this class.
++
++        This generator yields the `(key, value)` pairs of the underlying dictionary. If this object
++        was constructed from a list, the keys in this generator are simply the numeric indices.
++
++        This generator also supports overriding the yielded value upon receiving any value other
++        than `None` from a `send` [1] instruction.
++
++        [1]: https://docs.python.org/3/reference/expressions.html#generator.send
++        """
++        for key, value in self.items():
++            new_value = yield (key, value)
++            if new_value is not None:
++                self[key] = new_value
++
++
++class QubitConverter:
++    """A converter from Second-Quantized to Qubit Operators.
++
++    This converter can be configured with a mapper instance which will later be used
++    when 2nd quantized operators are requested to be converted (mapped) to qubit operators.
++
++    For a Fermionic system, when its a electronic problem, there are certain mappers, such as
++    the :class:`~qiskit_nature.mappers.second_q.ParityMapper` that introduces known
++    symmetries, by virtue of the mapping, that can be exploited to reduce the size of the
++    problem, i.e the qubit operator, by two qubits. The two qubit reduction setting indicates
++    to do this where possible - i.e. mapper supports it and the number of particles in the
++    Fermionic system is provided for the conversion. (The number of particles is used to
++    determine the symmetry)
++
++    Also this converter supports Z2 Symmetry reduction to reduce a problem (operator) size
++    based on mathematical symmetries that can be detected in the operator. A knowledgeable user
++    can define which sector the problem solution lies in. This sector information can also
++    be passed in on :meth:`convert` which will override this value should both be given.
++    """
++
++    def __init__(
++        self,
++        mappers: Sequence[QubitMapper],
++        two_qubit_reduction: bool = False,
++        z2symmetry_reduction: Optional[Union[str, List[int]]] = None,
++    ):
++        """
++
++        Args:
++            mapper: A mapper instance used to convert second quantized to qubit operators
++            two_qubit_reduction: Whether to carry out two qubit reduction when possible
++            z2symmetry_reduction: Indicates whether a z2 symmetry reduction should be applied to
++                resulting qubit operators that are computed. For each symmetry detected the operator
++                will be split into two where each requires one qubit less for computation. So for
++                example 3 symmetries will split the original operator into 8 new operators each
++                requiring 3 less qubits. Now only one of these operators will have the ground state
++                and be the correct symmetry sector needed for the ground state. Setting 'auto' will
++                use an automatic computation of the correct sector. If the sector is known
++                from other experiments with the z2symmetry logic, then the tapering values of that
++                sector can be provided (a list of int of values -1, and 1). The default is None
++                meaning no symmetry reduction is done.
++        """
++
++        self._mappers = mappers
++        self._two_qubit_reduction: bool = two_qubit_reduction
++        self._z2symmetry_reduction: Optional[Union[str, List[int]]] = None
++        self.z2symmetry_reduction = z2symmetry_reduction  # Setter does validation
++
++        self._did_two_qubit_reduction: bool = False
++        self._num_particles: Optional[Tuple[int, int]] = None
++        self._z2symmetries: Z2Symmetries = self._no_symmetries
++
++    @property
++    def _no_symmetries(self) -> Z2Symmetries:
++        return Z2Symmetries([], [], [], None)
++
++    @property
++    def mappers(self) -> list[QubitMapper]:
++        """Get mappers"""
++        return self._mappers
++
++    @mappers.setter
++    def mappers(self, value: list[QubitMapper]) -> None:
++        """Set mappers"""
++        self._mappers = value
++        self._z2symmetries = None  # Reset as symmetries my change due to mapper change
++
++    @property
++    def two_qubit_reduction(self) -> bool:
++        """Get two_qubit_reduction"""
++        return self._two_qubit_reduction
++
++    @two_qubit_reduction.setter
++    def two_qubit_reduction(self, value: bool) -> None:
++        """Set two_qubit_reduction"""
++        self._two_qubit_reduction = value
++        self._z2symmetries = None  # Reset as symmetries my change due to this reduction
++
++    @property
++    def z2symmetry_reduction(self) -> Optional[Union[str, List[int]]]:
++        """Get z2symmetry_reduction"""
++        return self._z2symmetry_reduction
++
++    @z2symmetry_reduction.setter
++    def z2symmetry_reduction(self, z2symmetry_reduction: Optional[Union[str, List[int]]]) -> None:
++        """Set z2symmetry_reduction"""
++        if z2symmetry_reduction is not None:
++            if isinstance(z2symmetry_reduction, str):
++                if z2symmetry_reduction != "auto":
++                    raise ValueError(
++                        "The only string-like option for z2symmetry_reduction is "
++                        f"'auto', not {z2symmetry_reduction}"
++                    )
++            elif not np.all(np.isin(z2symmetry_reduction, [-1, 1])):
++                raise ValueError(
++                    "z2symmetry_reduction tapering values list must "
++                    f"contain -1's and/or 1's only but was {z2symmetry_reduction}"
++                )
++
++        self._z2symmetry_reduction = z2symmetry_reduction
++
++    @property
++    def num_particles(self) -> Optional[Tuple[int, int]]:
++        """Get the number of particles as supplied to :meth:`convert`.
++
++        This can also be set, for advanced usage, using :meth:`force_match`
++        """
++        return self._num_particles
++
++    @property
++    def z2symmetries(self) -> Z2Symmetries:
++        """Get Z2Symmetries as detected from conversion via :meth:`convert`.
++
++        This may indicate no symmetries, i.e. be empty, if none were detected.
++
++        This can also be set, for advanced usage, using :meth:`force_match`
++        """
++        return copy.deepcopy(self._z2symmetries)
++
++    def convert(
++        self,
++        second_q_op: SecondQuantizedOp,
++        num_particles: Optional[list[Tuple[int, int]]] = None,
++        sector_locator: Optional[
++            list[Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]]
++        ] = None,
++    ) -> PauliSumOp:
++        """
++        Map the given second quantized operator to a qubit operators. Also it will
++        carry out z2 symmetry reduction on the qubit operators if z2symmetry_reduction has
++        been specified whether via the constructor or indirectly via the sector locator which
++        is passed the detected symmetries to inform the determination.
++
++        Args:
++            second_q_op: A second quantized operator.
++            num_particles: Needed for two qubit reduction to determine correct sector. If
++                not supplied, even if two_qubit_reduction is possible, it will not be done.
++            sector_locator: An optional callback, that given the detected Z2Symmetries, and also
++                the instance of the converter, can determine the correct sector of the tapered
++                operators so the correct one can be returned, which contains the problem solution,
++                out of the set that are the result of tapering.
++
++        Returns:
++            PauliSumOp qubit operator
++        """
++        qubit_op = self._map(second_q_op)
++        reduced_op = self._two_qubit_reduce(qubit_op, num_particles)
++        tapered_op, z2symmetries = self._find_taper_op(reduced_op, sector_locator)
++
++        self._num_particles = num_particles
++        self._z2symmetries = z2symmetries
++
++        return tapered_op
++
++    def convert_only(
++        self,
++        second_q_op: SecondQuantizedOp,
++        num_particles: Optional[Tuple[int, int]] = None,
++    ) -> PauliSumOp:
++        """
++        Map the given second quantized operator to a qubit operators using the mapper
++        and possibly two qubit reduction. No tapering is done, nor is any conversion state saved,
++        as is done in :meth:`convert` where a later :meth:`convert_match` will convert
++        further operators in an identical manner.
++
++        Args:
++            second_q_op: A second quantized operator.
++            num_particles: Needed for two qubit reduction to determine correct sector. If
++                not supplied, even if two_qubit_reduction is possible, it will not be done.
++
++        Returns:
++            PauliSumOp qubit operator
++        """
++        qubit_op = self._map(second_q_op)
++        reduced_op = self._two_qubit_reduce(qubit_op, num_particles)
++
++        return reduced_op
++
++    def force_match(
++        self,
++        num_particles: Optional[Tuple[int, int]] = None,
++        z2symmetries: Optional[Z2Symmetries] = None,
++    ) -> None:
++        """This is for advanced use where :meth:`convert` may not have been called or the
++        converter should be used to taper to some external characteristics to be matched
++        when using :meth:`convert_match`. Parameters passed here, when not None,
++        will override any values stored from :meth:`convert`.
++
++        Args:
++            num_particles: The number or particles pertaining to two qubit reduction
++            z2symmetries: Z2Symmetry information for tapering
++
++        Raises:
++            ValueError: If format of Z2Symmetry tapering values is invalid
++        """
++        if num_particles is not None:
++            self._num_particles = num_particles
++
++        if z2symmetries is not None:
++            if not z2symmetries.is_empty():
++                if len(z2symmetries.tapering_values) != len(z2symmetries.sq_list):
++                    raise ValueError(
++                        f"Z2Symmetries tapering value length was "
++                        f"{len(z2symmetries.tapering_values)} but expected "
++                        f"{len(z2symmetries.sq_list)}."
++                    )
++                if not np.all(np.isin(z2symmetries.tapering_values, [-1, 1])):
++                    raise ValueError(
++                        f"Z2Symmetries values list must contain only "
++                        f"-1's and/or 1's but was {z2symmetries.tapering_values}."
++                    )
++
++            self._z2symmetries = z2symmetries
++
++    def convert_match(
++        self,
++        second_q_ops: Union[SecondQuantizedOp, ListOrDictType[SecondQuantizedOp]],
++        suppress_none: bool = False,
++        check_commutes: bool = True,
++    ) -> Union[PauliSumOp, ListOrDictType[PauliSumOp]]:
++        """Convert further operators to match that done in :meth:`convert`, or as set by
++            :meth:`force_match`.
++
++        Args:
++            second_q_ops: A second quantized operator or list thereof to be converted
++            suppress_none: If None should be placed in the output list where an operator
++                did not commute with symmetry, to maintain order, or whether that should
++                be suppressed where the output list length may then be smaller than the input
++            check_commutes: If True (default) a tapered operator must commute with the
++                symmetry to be tapered otherwise None is returned for that operator. When
++                False the operator is tapered with no check so due consideration needs to
++                be given in this case to how such operator(s) are eventually used.
++
++        Returns:
++            A qubit operator or list thereof of the same length as the second_q_ops list. All
++            operators in the second_q_ops list must commute with the symmetry detected when
++            :meth:`convert` was called. If it does not then the position in the output list
++            will be set to `None` to preserve the order, unless suppress_none is set; or None may
++            be directly returned in the case when a single operator is provided (that cannot be
++            suppressed as it's a single value)
++        """
++        # To allow a single operator to be converted, but use the same logic that does the
++        # actual conversions, we make a single entry list of it here and unwrap to return.
++        wrapped_type = type(second_q_ops)
++
++        if isinstance(second_q_ops, SecondQuantizedOp):
++            second_q_ops = [second_q_ops]
++            suppress_none = False  # When only a single op we will return None back
++
++        wrapped_second_q_ops: _ListOrDict[SecondQuantizedOp] = _ListOrDict(second_q_ops)
++
++        qubit_ops: _ListOrDict[PauliSumOp] = _ListOrDict()
++        for name, second_q_op in iter(wrapped_second_q_ops):
++            qubit_ops[name] = self._map(second_q_op)
++
++        reduced_ops: _ListOrDict[PauliSumOp] = _ListOrDict()
++        for name, qubit_op in iter(qubit_ops):
++            reduced_ops[name] = self._two_qubit_reduce(qubit_op, self._num_particles)
++
++        tapered_ops = self._symmetry_reduce(reduced_ops, check_commutes)
++
++        returned_ops: Union[PauliSumOp, ListOrDictType[PauliSumOp]]
++
++        if issubclass(wrapped_type, SecondQuantizedOp):
++            returned_ops = list(iter(tapered_ops))[0][1]
++        elif wrapped_type == list:
++            if suppress_none:
++                returned_ops = [op for _, op in iter(tapered_ops) if op is not None]
++            else:
++                returned_ops = [op for _, op in iter(tapered_ops)]
++        elif wrapped_type == dict:
++            returned_ops = dict(iter(tapered_ops))
++
++        return returned_ops
++
++    def map(
++        self,
++        second_q_ops: Union[SecondQuantizedOp, ListOrDictType[SecondQuantizedOp]],
++    ) -> Union[PauliSumOp, ListOrDictType[PauliSumOp]]:
++        """A convenience method to map second quantized operators based on current mapper.
++
++        Args:
++            second_q_ops: A second quantized operator, or list thereof
++
++        Returns:
++            A qubit operator in the form of a PauliSumOp, or list thereof if a list of
++            second quantized operators was supplied
++        """
++        if isinstance(second_q_ops, SecondQuantizedOp):
++            qubit_ops = self._map(second_q_ops)
++        else:
++            wrapped_type = type(second_q_ops)
++
++            wrapped_second_q_ops: _ListOrDict[SecondQuantizedOp] = _ListOrDict(second_q_ops)
++
++            qubit_ops = _ListOrDict()
++            for name, second_q_op in iter(wrapped_second_q_ops):
++                qubit_ops[name] = self._map(second_q_op)
++
++            if wrapped_type == list:
++                qubit_ops = [op for _, op in iter(qubit_ops)]
++            elif wrapped_type == dict:
++                qubit_ops = dict(iter(qubit_ops))
++
++        return qubit_ops
++
++    def _map(self, second_q_op: SecondQuantizedOp) -> PauliSumOp:
++
++        if isinstance(second_q_op, MixedOp):
++            if isinstance(self._mappers, list) and len(self._mappers) > 1:
++                return self._map_multiple(second_q_op)
++            else:
++                raise TypeError(
++                    "The conversion of MixedOp requires at least a fermionic and spin mapper."
++                )
++
++        else:
++            if isinstance(self._mappers, list):
++                return self._mappers[0].map(second_q_op)
++            else:
++                return self._mappers.map(second_q_op)
++
++    def _map_multiple(self, second_q_op: MixedOp) -> PauliSumOp:
++
++        mix_coefficients = second_q_op.coeffs
++        operators = second_q_op.ops
++
++        for mapper in self._mappers:
++            if isinstance(mapper, FermionicMapper):
++                fermionic_mapper = mapper
++            else:
++                spin_mapper = mapper
++
++        # get rid of this func
++        def apply_map_sym(op, mapper):
++            qubit_op = mapper.map(op)
++            return qubit_op
++
++        # convert all fermionics and store in list
++        qubit_f_ops = []
++        max_f_reg_length = 0
++        for f_op in operators[FermionicOp]:
++            q_op = apply_map_sym(f_op, fermionic_mapper)
++            max_f_reg_length = (
++                q_op.num_qubits if q_op.num_qubits > max_f_reg_length else max_f_reg_length
++            )
++            qubit_f_ops.append(q_op)
++
++        # convert all spins and store in list
++        qubit_s_ops = []
++        max_s_reg_length = 0
++        for s_op in operators[SpinOp]:
++            q_op = apply_map_sym(s_op, spin_mapper)
++            max_s_reg_length = (
++                q_op.num_qubits if q_op.num_qubits > max_s_reg_length else max_s_reg_length
++            )
++            qubit_s_ops.append(q_op)
++
++        f_paulis = I if max_f_reg_length > 0 else None
++        for i in range(max_f_reg_length - 1):
++            f_paulis ^= I
++
++        s_paulis = I if max_s_reg_length > 0 else None
++        for i in range(max_s_reg_length - 1):
++            s_paulis ^= I
++
++        qubit_ops = []
++        for c in mix_coefficients:
++            if len(c[0]) > 1:
++                qubit_ops.append(qubit_f_ops[c[0][0][1]] ^ qubit_s_ops[c[0][1][1]] * c[1])
++            elif c[0][0][0] is FermionicOp:
++                qubit_ops.append(qubit_f_ops[c[0][0][1]] ^ s_paulis * c[1])
++            elif c[0][0][0] is SpinOp:
++                qubit_ops.append(f_paulis ^ qubit_s_ops[c[0][0][1]] * c[1])
++
++        return sum(qubit_ops)
++
++    def _two_qubit_reduce(
++        self, qubit_op: PauliSumOp, num_particles: Optional[Tuple[int, int]]
++    ) -> PauliSumOp:
++        reduced_op = qubit_op
++
++        if num_particles is not None:
++            if self._two_qubit_reduction and self._mapper.allows_two_qubit_reduction:
++                if qubit_op.num_qubits <= 2:
++                    logger.warning(
++                        "The original qubit operator only contains %s qubits! Skipping the requested "
++                        "two-qubit reduction!",
++                        qubit_op.num_qubits,
++                    )
++                    return reduced_op
++
++                two_q_reducer = TwoQubitReduction(num_particles)
++                reduced_op = cast(PauliSumOp, two_q_reducer.convert(qubit_op))
++
++        return reduced_op
++
++    def _find_taper_op(
++        self,
++        qubit_op: PauliSumOp,
++        sector_locator: Optional[
++            Callable[[Z2Symmetries, "QubitConverter"], Optional[List[int]]]
++        ] = None,
++    ) -> Tuple[PauliSumOp, Z2Symmetries]:
++        # Return operator unchanged and empty symmetries if we do not taper
++        tapered_qubit_op = qubit_op
++        z2_symmetries = self._no_symmetries
++
++        # If we were given a sector, or one might be located, we first need to find any symmetries
++        if self.z2symmetry_reduction is not None:
++            z2_symmetries = Z2Symmetries.find_Z2_symmetries(qubit_op)
++            if z2_symmetries.is_empty():
++                logger.debug("No Z2 symmetries found")
++            else:
++                # As we have symmetries, if we have a sector locator, if that provides one back
++                # it will override any value defined on constructor
++                if sector_locator is not None and self.z2symmetry_reduction == "auto":
++                    z2symmetry_reduction = sector_locator(z2_symmetries, self)
++                    if z2symmetry_reduction is not None:
++                        self.z2symmetry_reduction = z2symmetry_reduction  # Overrides any value
++
++                    # We may end up that neither were we given a sector nor that the locator
++                    # returned one. Since though we may have found valid symmetries above we should
++                    # simply just forget about them so as not to return something we are not using.
++                    if self.z2symmetry_reduction is None:
++                        z2_symmetries = self._no_symmetries
++
++        # So now if we have a sector and have symmetries we found we can attempt to taper
++        if (
++            self.z2symmetry_reduction is not None
++            and self.z2symmetry_reduction != "auto"
++            and not z2_symmetries.is_empty()
++        ):
++            # check sector definition fits to symmetries found
++            if len(self._z2symmetry_reduction) != len(z2_symmetries.symmetries):
++                raise QiskitNatureError(
++                    "z2symmetry_reduction tapering values list has "
++                    f"invalid length {len(self._z2symmetry_reduction)} "
++                    f"should be {len(z2_symmetries.symmetries)}"
++                )
++            # Check all operators commute with main operator's symmetry
++            logger.debug("Sanity check that operator commutes with the symmetry")
++            symmetry_ops = []
++            for symmetry in z2_symmetries.symmetries:
++                symmetry_ops.append(PauliSumOp.from_list([(symmetry.to_label(), 1.0)]))
++            commutes = QubitConverter._check_commutes(symmetry_ops, qubit_op)
++            if not commutes:
++                raise QiskitNatureError(
++                    "Z2 symmetry failure. The operator must commute "
++                    "with symmetries found from it!"
++                )
++
++            z2_symmetries.tapering_values = self._z2symmetry_reduction
++            tapered_qubit_op = z2_symmetries.taper(qubit_op) if commutes else None
++
++        return tapered_qubit_op, z2_symmetries
++
++    def _symmetry_reduce(
++        self,
++        qubit_ops: _ListOrDict[PauliSumOp],
++        check_commutes: bool,
++    ) -> _ListOrDict[PauliSumOp]:
++
++        if self._z2symmetries is None or self._z2symmetries.is_empty():
++            tapered_qubit_ops = qubit_ops
++        else:
++            if check_commutes:
++                logger.debug("Checking operators commute with symmetry:")
++                symmetry_ops = []
++                for symmetry in self._z2symmetries.symmetries:
++                    symmetry_ops.append(PauliSumOp.from_list([(symmetry.to_label(), 1.0)]))
++                commuted = {}
++                for name, qubit_op in iter(qubit_ops):
++                    commutes = QubitConverter._check_commutes(symmetry_ops, qubit_op)
++                    commuted[name] = commutes
++                    logger.debug("Qubit operator '%s' commuted with symmetry: %s", name, commutes)
++
++                # Tapering values were set from prior convert so we go ahead and taper operators
++                tapered_qubit_ops = _ListOrDict()
++                for name, commutes in commuted.items():
++                    if commutes:
++                        tapered_qubit_ops[name] = self._z2symmetries.taper(qubit_ops[name])
++            else:
++                logger.debug("Tapering operators whether they commute with symmetry or not:")
++                tapered_qubit_ops = _ListOrDict()
++                for name, qubit_op in iter(qubit_ops):
++                    tapered_qubit_ops[name] = self._z2symmetries.taper(qubit_ops[name])
++
++        return tapered_qubit_ops
++
++    @staticmethod
++    def _check_commutes(cliffords: List[PauliSumOp], qubit_op: PauliSumOp) -> bool:
++        commutes = []
++        for clifford in cliffords:
++            commuting_rows = qubit_op.primitive.paulis.commutes_with_all(clifford.primitive.paulis)
++            commutes.append(len(commuting_rows) == qubit_op.primitive.size)
++        does_commute = bool(np.all(commutes))
++        logger.debug("  '%s' commutes: %s, %s", id(qubit_op), does_commute, commutes)
++
++        return does_commute
+diff --git a/qiskit_nature/mappers/qubit_mapper.py b/qiskit_nature/mappers/qubit_mapper.py
+new file mode 100644
+index 00000000..0f26920b
+--- /dev/null
++++ b/qiskit_nature/mappers/qubit_mapper.py
+@@ -0,0 +1,149 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""Qubit Mapper interface."""
++
++from abc import ABC, abstractmethod
++from typing import List, Tuple
++
++from qiskit.opflow import PauliSumOp
++from qiskit.quantum_info.operators import Pauli, SparsePauliOp
++
++from qiskit_nature import QiskitNatureError
++from qiskit_nature.second_q.operators import FermionicOp, SecondQuantizedOp
++
++
++class QubitMapper(ABC):
++    """The interface for implementing methods which map from a `SecondQuantizedOp` to a
++    qubit operator in the form of a `PauliSumOp`.
++    """
++
++    def __init__(self, allows_two_qubit_reduction: bool = False):
++        """
++        Args:
++            allows_two_qubit_reduction: Set if mapper will create known symmetry such that the
++                number of qubits in the mapped operator can be reduced accordingly.
++        """
++        self._allows_two_qubit_reduction = allows_two_qubit_reduction
++
++    @property
++    def allows_two_qubit_reduction(self) -> bool:
++        """
++        Getter for symmetry information for two qubit reduction
++
++        Returns: If mapping generates the known symmetry that allows two qubit reduction.
++
++        """
++        return self._allows_two_qubit_reduction
++
++    @abstractmethod
++    def map(self, second_q_op: SecondQuantizedOp) -> PauliSumOp:
++        """Maps a :class:`~qiskit_nature.second_q.operators.SecondQuantizedOp`
++        to a `PauliSumOp`.
++
++        Args:
++            second_q_op: the `SecondQuantizedOp` to be mapped.
++
++        Returns:
++            The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.
++        """
++        raise NotImplementedError()
++
++    @staticmethod
++    def mode_based_mapping(
++        second_q_op: SecondQuantizedOp, pauli_table: List[Tuple[Pauli, Pauli]]
++    ) -> PauliSumOp:
++        """Utility method to map a `SecondQuantizedOp` to a `PauliSumOp` using a pauli table.
++
++        Args:
++            second_q_op: the `SecondQuantizedOp` to be mapped.
++            pauli_table: a table of paulis built according to the modes of the operator
++
++        Returns:
++            The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.
++
++        Raises:
++            QiskitNatureError: If number length of pauli table does not match the number
++                of operator modes, or if the operator has unexpected label content
++        """
++        nmodes = len(pauli_table)
++        if nmodes != second_q_op.register_length:
++            raise QiskitNatureError(
++                f"Pauli table len {nmodes} does not match"
++                f"operator register length {second_q_op.register_length}"
++            )
++
++        # 0. Some utilities
++
++        times_creation_op = []
++        times_annihilation_op = []
++        times_occupation_number_op = []
++        times_emptiness_number_op = []
++        for paulis in pauli_table:
++            real_part = SparsePauliOp(paulis[0], coeffs=[0.5])
++            imag_part = SparsePauliOp(paulis[1], coeffs=[0.5j])
++
++            # The creation operator is given by 0.5*(X - 1j*Y)
++            creation_op = real_part - imag_part
++            times_creation_op.append(creation_op)
++
++            # The annihilation operator is given by 0.5*(X + 1j*Y)
++            annihilation_op = real_part + imag_part
++            times_annihilation_op.append(annihilation_op)
++
++            # The occupation number operator N is given by `+-`.
++            times_occupation_number_op.append(
++                creation_op.compose(annihilation_op, front=True).simplify()
++            )
++
++            # The `emptiness number` operator E is given by `-+` = (I - N).
++            times_emptiness_number_op.append(
++                annihilation_op.compose(creation_op, front=True).simplify()
++            )
++
++        # make sure ret_op_list is not empty by including a zero op
++        ret_op_list = [SparsePauliOp("I" * nmodes, coeffs=[0])]
++
++        # TODO to_list() is not an attribute of SecondQuantizedOp. Change the former to have this or
++        #   change the signature above to take FermionicOp?
++        label_coeff_list = (
++            second_q_op.to_list(display_format="dense")
++            if isinstance(second_q_op, FermionicOp)
++            else second_q_op.to_list()
++        )
++        for label, coeff in label_coeff_list:
++
++            # 1. Initialize an operator list with the identity scaled by the `self.coeff`
++            ret_op = SparsePauliOp("I" * nmodes, coeffs=[coeff])
++
++            # Go through the label and replace the fermion operators by their qubit-equivalent, then
++            # save the respective Pauli string in the pauli_str list.
++            for position, char in enumerate(label):
++                if char == "+":
++                    ret_op = ret_op.compose(times_creation_op[position], front=True)
++                elif char == "-":
++                    ret_op = ret_op.compose(times_annihilation_op[position], front=True)
++                elif char == "N":
++                    ret_op = ret_op.compose(times_occupation_number_op[position], front=True)
++                elif char == "E":
++                    ret_op = ret_op.compose(times_emptiness_number_op[position], front=True)
++                elif char == "I":
++                    continue
++
++                # catch any disallowed labels
++                else:
++                    raise QiskitNatureError(
++                        f"FermionicOp label included '{char}'. Allowed characters: I, N, E, +, -"
++                    )
++            ret_op_list.append(ret_op)
++
++        return PauliSumOp(SparsePauliOp.sum(ret_op_list).simplify())
+diff --git a/qiskit_nature/mappers/spin_mapper.py b/qiskit_nature/mappers/spin_mapper.py
+new file mode 100644
+index 00000000..6e893711
+--- /dev/null
++++ b/qiskit_nature/mappers/spin_mapper.py
+@@ -0,0 +1,36 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""Spin Mapper."""
++
++from abc import abstractmethod
++
++from qiskit.opflow import PauliSumOp
++from qiskit_nature.second_q.operators import SpinOp
++
++from .qubit_mapper import QubitMapper
++
++
++class SpinMapper(QubitMapper):
++    """Mapper of Spin Operator to Qubit Operator"""
++
++    @abstractmethod
++    def map(self, second_q_op: SpinOp) -> PauliSumOp:
++        """Maps a :class:`~qiskit_nature.second_q.operators.SpinOp` to a `PauliSumOp`.
++
++        Args:
++            second_q_op: the `SpinOp` to be mapped.
++
++        Returns:
++            The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.
++        """
++        raise NotImplementedError()
+diff --git a/qiskit_nature/mappers/vibrational_mapper.py b/qiskit_nature/mappers/vibrational_mapper.py
+new file mode 100644
+index 00000000..581bbd66
+--- /dev/null
++++ b/qiskit_nature/mappers/vibrational_mapper.py
+@@ -0,0 +1,37 @@
++# This code is part of Qiskit.
++#
++# (C) Copyright IBM 2021, 2022.
++#
++# This code is licensed under the Apache License, Version 2.0. You may
++# obtain a copy of this license in the LICENSE.txt file in the root directory
++# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
++#
++# Any modifications or derivative works of this code must retain this
++# copyright notice, and modified files need to carry a notice indicating
++# that they have been altered from the originals.
++
++"""Vibrational Mapper."""
++
++from abc import abstractmethod
++
++from qiskit.opflow import PauliSumOp
++from qiskit_nature.second_q.operators import VibrationalOp
++
++from .qubit_mapper import QubitMapper
++
++
++class VibrationalMapper(QubitMapper):
++    """Mapper of Vibrational Operator to Qubit Operator"""
++
++    @abstractmethod
++    def map(self, second_q_op: VibrationalOp) -> PauliSumOp:
++        """Maps a :class:`~qiskit_nature.second_q.operators.VibrationalOp`
++        to a `PauliSumOp`.
++
++        Args:
++            second_q_op: the `VibrationalOp` to be mapped.
++
++        Returns:
++            The `PauliSumOp` corresponding to the problem-Hamiltonian in the qubit space.
++        """
++        raise NotImplementedError()
