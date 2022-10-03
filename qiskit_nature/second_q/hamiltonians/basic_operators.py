@@ -121,7 +121,7 @@ class QLM:
         )
 
     # This operator could potentially create sign issues. We need to get it checked.
-    def operator_plaquette(self, nodes: tuple(int,int,int,int)):
+    def operator_plaquette(self, nodes: tuple[int,int,int,int]):
         """Returns the plaquette operator for a given plaquette.
 
         The plaquette operator for a given square consists of the product of the botom

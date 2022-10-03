@@ -196,9 +196,9 @@ class WilsonModel(LatticeModel):
         Args:
             display_format: We need to wait until MixedOps is finished
         """
-        hamiltonian = self.mass_term()
+        hamiltonian = self.hopping_term()
+        hamiltonian += self.mass_term()
         hamiltonian += self.link_term()
-        hamiltonian += self.hopping_term()
         plaquette_term = self.plaquette_term()
 
         if plaquette_term is not None:
